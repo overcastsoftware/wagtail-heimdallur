@@ -9,6 +9,7 @@ from django.utils.html import format_html
 from wagtail import hooks as wagtail_hooks
 
 from wagtail_heimdallur.conf import DEFAULTS
+from wagtail_heimdallur.engines.page_translation import connect_page_translation_signal
 
 PROOFREAD_FEATURE = "heimdallur-proofread"
 TRANSLATE_FEATURE = "heimdallur-translate"
@@ -26,6 +27,9 @@ def register_heimdallur_hooks(
 
     for hook_name, hook_func in registrations:
         register(hook_name, hook_func)
+
+    if _feature_settings(settings)["page_translation"]:
+        connect_page_translation_signal()
 
     return registrations
 

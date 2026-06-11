@@ -181,8 +181,8 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Create `tests/test_hooks.py` with Hypothesis strategies for feature toggle combinations
     - **Validates: Requirements 1.2, 1.9, 1.10, 12.5, 12.6, 12.7**
 
-- [ ] 8. Implement page translation
-  - [ ] 8.1 Implement page translation hook and field processing
+- [x] 8. Implement page translation
+  - [x] 8.1 Implement page translation hook and field processing
     - Implement signal handler for Wagtail's `copy_for_translation` (or hook into `simple_translation` module)
     - Iterate all translatable fields: plain text, rich text, StreamField text blocks
     - Invoke `TranslationEngine` for each text segment
@@ -192,7 +192,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Show warning listing skipped fields on partial completion
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 12.7_
 
-  - [ ]* 8.2 Write property tests for page translation
+  - [x]* 8.2 Write property tests for page translation
     - **Property 12: Page translation processes all translatable field types**
     - **Property 13: Partial field failure does not prevent remaining translations**
     - Create `tests/test_engines/test_page_translation.py`
