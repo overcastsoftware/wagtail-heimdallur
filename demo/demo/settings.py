@@ -11,8 +11,10 @@ ALLOWED_HOSTS = ["*"]
 INSTALLED_APPS = [
     "home",
     "wagtail_heimdallur",
+    "wagtail.contrib.simple_translation",
     "wagtail.contrib.forms",
     "wagtail.contrib.redirects",
+    "wagtail.locales",
     "wagtail.embeds",
     "wagtail.sites",
     "wagtail.users",
@@ -53,7 +55,12 @@ DATABASES = {
     }
 }
 
-LANGUAGE_CODE = "en"
+LANGUAGE_CODE = "is"
+LANGUAGES = [
+    ("is", "Icelandic"),
+    ("en", "English"),
+]
+WAGTAIL_CONTENT_LANGUAGES = LANGUAGES
 TIME_ZONE = "Atlantic/Reykjavik"
 USE_I18N = True
 USE_TZ = True
@@ -65,6 +72,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 WAGTAIL_SITE_NAME = "Wagtail-Heimdallur Demo"
+WAGTAIL_I18N_ENABLED = True
 WAGTAILADMIN_BASE_URL = os.environ.get(
     "WAGTAILADMIN_BASE_URL",
     "http://localhost:8000",

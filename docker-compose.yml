@@ -32,4 +32,5 @@ services:
       - "8000:8000"
     command: >
       sh -c "python demo/manage.py migrate --noinput &&
+             python demo/manage.py setup_demo &&
              python demo/manage.py runserver 0.0.0.0:8000"
