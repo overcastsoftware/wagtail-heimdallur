@@ -106,6 +106,33 @@ class BackendRegistry:
 
         return sorted(pairs)
 
+    def get_backend_statuses(self) -> list[dict]:
+        """Return configured backend capability information."""
+        statuses = []
+        for entry in self._backends.values():
+            proofreading_languages = []
+            translation_pairs = []
+
+            if isinstance(entry.backend, BaseProofreadingBackend):
+                proofreading_languages = list(entry.backend.get_supported_languages())
+
+            if isinstance(entry.backend, BaseTranslationBackend):
+                translation_pairs = [
+                    tuple(pair)
+                    for pair in entry.backend.get_supported_language_pairs()
+                ]
+
+            statuses.append(
+                {
+                    "identifier": entry.identifier,
+                    "enabled": entry.enabled,
+                    "proofreading_languages": proofreading_languages,
+                    "translation_pairs": translation_pairs,
+                }
+            )
+
+        return statuses
+
     def _get_routed_entry(self, backend_id: str | None) -> _BackendEntry | None:
         if backend_id is None:
             return None

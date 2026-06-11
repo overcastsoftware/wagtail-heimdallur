@@ -243,15 +243,15 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Ensure accessibility: sufficient contrast ratios, focus indicators
     - _Requirements: 6.3, 6.4_
 
-- [ ] 11. Implement management command
-  - [ ] 11.1 Create heimdallur_check management command
+- [x] 11. Implement management command
+  - [x] 11.1 Create heimdallur_check management command
     - Create `wagtail_heimdallur/management/__init__.py` and `commands/__init__.py`
     - Create `wagtail_heimdallur/management/commands/heimdallur_check.py`
     - Output: enabled features, active backends with supported languages, resolved language routing table
     - Use `self.stdout.write()` with styling for success/warning output
     - _Requirements: 12.11, 12.12_
 
-  - [ ]* 11.2 Write property test for management command output completeness
+  - [x]* 11.2 Write property test for management command output completeness
     - **Property 19: Management command output completeness**
     - Create `tests/test_management_commands.py` with Hypothesis strategy for valid configurations
     - Verify output contains all enabled features, backend identifiers, and routing entries
