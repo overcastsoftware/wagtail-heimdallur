@@ -3,6 +3,7 @@
 #   docker compose run tests              - Run full test suite (pytest)
 #   docker compose run tests tox          - Run tox matrix testing
 #   docker compose run tests pytest <path> - Run specific test file or function
+#   docker compose up demo                - Run the demo Wagtail site
 
 services:
   tests:
@@ -15,3 +16,20 @@ services:
     environment:
       - PYTHONPATH=/app
       - DJANGO_SETTINGS_MODULE=tests.settings
+
+  demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=demo.demo.settings
+      - MALSTADUR_API_KEY=${MALSTADUR_API_KEY:-}
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python demo/manage.py migrate --noinput &&
+             python demo/manage.py runserver 0.0.0.0:8000"

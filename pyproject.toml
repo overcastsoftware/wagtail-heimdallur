@@ -47,9 +47,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/wagtail-heimdallur/wagtail-heimdallur"
-Repository = "https://github.com/wagtail-heimdallur/wagtail-heimdallur"
-Issues = "https://github.com/wagtail-heimdallur/wagtail-heimdallur/issues"
+Homepage = "https://github.com/overcastsoftware/wagtail-heimdallur"
+Repository = "https://github.com/overcastsoftware/wagtail-heimdallur"
+Issues = "https://github.com/overcastsoftware/wagtail-heimdallur/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["wagtail_heimdallur"]

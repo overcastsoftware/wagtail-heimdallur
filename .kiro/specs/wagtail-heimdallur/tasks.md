@@ -260,8 +260,8 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
 - [x] 12. Checkpoint - All features implemented
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 13. Demo site and packaging
-  - [ ] 13.1 Create Docker-based demo site
+- [x] 13. Demo site and packaging
+  - [x] 13.1 Create Docker-based demo site
     - Create `demo/` directory with a minimal Wagtail project configured with the plugin
     - Create `docker-compose.yml` at repository root
     - Configure demo with Miðeind backend reading API key from environment variable
@@ -270,7 +270,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Add README instructions for running the demo
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-  - [ ] 13.2 Set up packaging and CI
+  - [x] 13.2 Set up packaging and CI
     - Create `pyproject.toml` with package metadata, dependencies (min version constraints), and entry points
     - Create `tox.ini` for test matrix across Python 3.11+, Django 4.2+, Wagtail 6.0+
     - Add MIT LICENSE file

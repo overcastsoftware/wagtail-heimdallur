@@ -1,0 +1,11 @@
+[
+  {
+    "model": "home.homepage",
+    "pk": 1,
+    "fields": {
+      "title": "Heimdallur sýnisíða",
+      "slug": "heimdallur-synisida",
+      "body": "<p>Þetta er íslenskur sýnitexti fyrir prófarkalestur og þýðingu.</p>"
+    }
+  }
+]
