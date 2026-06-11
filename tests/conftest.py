@@ -3,6 +3,11 @@
 import django
 from django.conf import settings
 
+from wagtail_heimdallur.backends.base import (
+    BaseProofreadingBackend,
+    BaseTranslationBackend,
+)
+
 
 def pytest_configure(config):
     """Configure Django settings for test runs if not already configured."""
@@ -41,8 +46,7 @@ def pytest_configure(config):
         )
         django.setup()
 
-
-class DummyBackend:
+class DummyBackend(BaseProofreadingBackend, BaseTranslationBackend):
     """A minimal backend for testing purposes."""
 
     def __init__(self, **kwargs):

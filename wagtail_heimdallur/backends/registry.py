@@ -85,6 +85,27 @@ class BackendRegistry:
 
         return self._fallback_or_raise_for_translation(pair)
 
+    def get_supported_proofreading_languages(self) -> list[str]:
+        """Return all proofreading languages supported by enabled backends."""
+        languages = set()
+        for entry in self._backends.values():
+            if entry.enabled and isinstance(entry.backend, BaseProofreadingBackend):
+                languages.update(entry.backend.get_supported_languages())
+
+        return sorted(languages)
+
+    def get_supported_translation_pairs(self) -> list[tuple[str, str]]:
+        """Return all translation pairs supported by enabled backends."""
+        pairs = set()
+        for entry in self._backends.values():
+            if entry.enabled and isinstance(entry.backend, BaseTranslationBackend):
+                pairs.update(
+                    tuple(pair)
+                    for pair in entry.backend.get_supported_language_pairs()
+                )
+
+        return sorted(pairs)
+
     def _get_routed_entry(self, backend_id: str | None) -> _BackendEntry | None:
         if backend_id is None:
             return None

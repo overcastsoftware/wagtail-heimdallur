@@ -128,8 +128,8 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Use `httpx-mock` or `responses` for HTTP mocking
     - _Requirements: 3.4, 3.5, 3.6, 3.7, 4.6, 4.7_
 
-- [ ] 6. Implement engines and API views
-  - [ ] 6.1 Implement ProofreadingEngine and TranslationEngine
+- [x] 6. Implement engines and API views
+  - [x] 6.1 Implement ProofreadingEngine and TranslationEngine
     - Create `wagtail_heimdallur/engines/__init__.py`
     - Create `wagtail_heimdallur/engines/proofreading.py` with `ProofreadingEngine` that uses `BackendRegistry` to route and invoke proofreading
     - Create `wagtail_heimdallur/engines/translation.py` with `TranslationEngine` that uses `BackendRegistry` to route and invoke translation
@@ -138,13 +138,13 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Log all backend interactions at DEBUG level
     - _Requirements: 2.8, 2.9, 8.2, 8.4, 8.5_
 
-  - [ ]* 6.2 Write property tests for engine error wrapping
+  - [x]* 6.2 Write property tests for engine error wrapping
     - **Property 15: Unexpected exceptions wrapped as BackendError**
     - **Property 16: No partial modifications on backend failure**
     - Create `tests/test_engines/test_proofreading.py` and `tests/test_engines/test_translation.py`
     - **Validates: Requirements 8.2, 8.4**
 
-  - [ ] 6.3 Implement API views and URL configuration
+  - [x] 6.3 Implement API views and URL configuration
     - Create `wagtail_heimdallur/views.py` with `ProofreadView`, `TranslateView`, `SupportedLanguagesView`
     - `ProofreadView`: accept POST with `text` and `language`, return serialized `ProofreadingResult`
     - `TranslateView`: accept POST with `text`, `source_language`, `target_language`, return `{"translated_text": "..."}`
@@ -153,7 +153,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Create `wagtail_heimdallur/urls.py` with URL patterns under `/api/heimdallur/`
     - _Requirements: 6.2, 7.3, 8.2_
 
-  - [ ]* 6.4 Write unit tests for API views
+  - [x]* 6.4 Write unit tests for API views
     - Test successful proofreading request/response cycle
     - Test successful translation request/response cycle
     - Test error response format for various BackendError types
