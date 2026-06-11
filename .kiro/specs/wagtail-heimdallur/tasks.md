@@ -198,7 +198,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Create `tests/test_engines/test_page_translation.py`
     - **Validates: Requirements 5.2, 5.5**
 
-- [ ] 9. Checkpoint - Backend and integration complete
+- [x] 9. Checkpoint - Backend and integration complete
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 10. Implement Draftail editor extension (TypeScript/React)
