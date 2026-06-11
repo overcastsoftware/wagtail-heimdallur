@@ -53,14 +53,14 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Support `docker compose run tests pytest <path>` for targeted test runs
     - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 13.7_
 
-- [ ] 2. Implement backend abstract classes and registry
-  - [ ] 2.1 Create backend abstract base classes
+- [x] 2. Implement backend abstract classes and registry
+  - [x] 2.1 Create backend abstract base classes
     - Create `wagtail_heimdallur/backends/__init__.py`
     - Create `wagtail_heimdallur/backends/base.py` with `BaseTranslationBackend` and `BaseProofreadingBackend` ABCs
     - Define abstract methods: `translate()`, `get_supported_language_pairs()`, `proofread()`, `get_supported_languages()`
     - _Requirements: 2.1, 2.2, 2.13_
 
-  - [ ] 2.2 Implement BackendRegistry with language routing
+  - [x] 2.2 Implement BackendRegistry with language routing
     - Create `wagtail_heimdallur/backends/registry.py` with `BackendRegistry` class
     - Implement `_load_backends(settings)` to dynamically import and instantiate backend classes with OPTIONS kwargs
     - Implement `get_backend_for_proofreading(language)` with routing table lookup and fallback to first capable backend
@@ -70,7 +70,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Skip backends with `enabled: False`
     - _Requirements: 2.3, 2.4, 2.5, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 1.13, 12.8, 12.9, 12.10_
 
-  - [ ]* 2.3 Write property tests for backend registry routing
+  - [x]* 2.3 Write property tests for backend registry routing
     - **Property 4: Proofreading language routing resolution**
     - **Property 5: Translation language pair routing resolution**
     - **Property 6: Routing fallback to first capable backend**
@@ -80,7 +80,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Create `tests/test_backends/test_registry.py` with Hypothesis strategies for settings dictionaries and routing tables
     - **Validates: Requirements 2.8, 2.9, 2.10, 2.11, 2.12, 1.13, 12.8, 12.9, 12.10**
 
-  - [ ]* 2.4 Write property test for backend options pass-through
+  - [x]* 2.4 Write property test for backend options pass-through
     - **Property 9: Backend options pass-through**
     - Verify all OPTIONS key-value pairs arrive as kwargs to backend `__init__`
     - **Validates: Requirements 2.5**
