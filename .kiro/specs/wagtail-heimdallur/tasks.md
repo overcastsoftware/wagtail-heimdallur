@@ -201,15 +201,15 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
 - [x] 9. Checkpoint - Backend and integration complete
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 10. Implement Draftail editor extension (TypeScript/React)
-  - [ ] 10.1 Set up TypeScript build toolchain
+- [x] 10. Implement Draftail editor extension (TypeScript/React)
+  - [x] 10.1 Set up TypeScript build toolchain
     - Create `wagtail_heimdallur/client/package.json` with React, Draft.js typings, and build scripts
     - Create `wagtail_heimdallur/client/tsconfig.json`
     - Configure bundler (webpack/esbuild) to output to `wagtail_heimdallur/static/wagtail_heimdallur/js/`
     - Create `wagtail_heimdallur/client/src/index.ts` as entry point registering Draftail plugins
     - _Requirements: 6.1, 7.1_
 
-  - [ ] 10.2 Implement inline proofreading components
+  - [x] 10.2 Implement inline proofreading components
     - Create `ProofreadButton.tsx` (toolbar source component) — sends field content to `/api/heimdallur/proofread/`
     - Create `AnnotationDecorator.tsx` — renders inline highlights for Diff_Annotations as Draftail entity decorators
     - Create `AnnotationPopover.tsx` — shows original text, suggestion, change type; accept/dismiss actions
@@ -217,12 +217,12 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Handle API errors by displaying notification toast
     - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8_
 
-  - [ ]* 10.3 Write property test for annotation correction application
+  - [x]* 10.3 Write property test for annotation correction application
     - **Property 14: Annotation correction application**
     - Test in TypeScript (Jest) or Python — applying a DiffAnnotation replaces exactly the target substring
     - **Validates: Requirements 6.5**
 
-  - [ ] 10.4 Implement inline translation components
+  - [x] 10.4 Implement inline translation components
     - Create `TranslateButton.tsx` (toolbar source component) — opens language pair selector modal
     - Create `LanguagePairSelector.tsx` — fetches supported pairs from `/api/heimdallur/languages/`
     - Create `TranslationPreview.tsx` — displays translated text with accept/cancel actions
@@ -230,7 +230,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Handle API errors by displaying notification toast
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7_
 
-  - [ ]* 10.5 Write frontend unit tests
+  - [x]* 10.5 Write frontend unit tests
     - Test ProofreadButton renders and triggers API call
     - Test AnnotationPopover accept/dismiss behavior
     - Test TranslateButton and LanguagePairSelector rendering
@@ -238,7 +238,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Use Jest with @testing-library/react and MSW for API mocking
     - _Requirements: 6.1–6.8, 7.1–7.7_
 
-  - [ ] 10.6 Create editor CSS styles
+  - [x] 10.6 Create editor CSS styles
     - Create `wagtail_heimdallur/static/wagtail_heimdallur/css/` with styles for annotation highlights, popovers, and translation preview panel
     - Ensure accessibility: sufficient contrast ratios, focus indicators
     - _Requirements: 6.3, 6.4_
