@@ -161,21 +161,21 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Use Django test client with mocked engines
     - _Requirements: 6.2, 7.3, 8.2_
 
-- [ ] 7. Implement Wagtail hooks and AppConfig
-  - [ ] 7.1 Implement Wagtail hooks with feature toggle gating
+- [x] 7. Implement Wagtail hooks and AppConfig
+  - [x] 7.1 Implement Wagtail hooks with feature toggle gating
     - Create `wagtail_heimdallur/hooks.py` with conditional hook registration based on feature toggles
     - Register `register_rich_text_features` hook for Draftail plugin (proofreading and translation)
     - Register `insert_editor_js` and `insert_editor_css` hooks for loading frontend bundle
     - Gate each registration on respective feature toggle
     - _Requirements: 1.2, 1.10, 12.5, 12.6, 12.7_
 
-  - [ ] 7.2 Implement AppConfig with startup validation
+  - [x] 7.2 Implement AppConfig with startup validation
     - Create `wagtail_heimdallur/apps.py` with `WagtailHeimdallurConfig` AppConfig
     - In `ready()`: run `ConfigurationValidator`, initialize `BackendRegistry`, register hooks
     - Raise `ImproperlyConfigured` if no backends configured
     - _Requirements: 1.4, 1.15_
 
-  - [ ]* 7.3 Write property test for feature toggle conditional registration
+  - [x]* 7.3 Write property test for feature toggle conditional registration
     - **Property 2: Feature toggle conditional registration**
     - **Property 3: Feature toggle defaults to enabled**
     - Create `tests/test_hooks.py` with Hypothesis strategies for feature toggle combinations
