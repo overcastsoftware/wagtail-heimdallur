@@ -257,7 +257,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Verify output contains all enabled features, backend identifiers, and routing entries
     - **Validates: Requirements 12.11, 12.12**
 
-- [ ] 12. Checkpoint - All features implemented
+- [x] 12. Checkpoint - All features implemented
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 13. Demo site and packaging
