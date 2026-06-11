@@ -85,8 +85,8 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Verify all OPTIONS key-value pairs arrive as kwargs to backend `__init__`
     - **Validates: Requirements 2.5**
 
-- [ ] 3. Implement configuration validator
-  - [ ] 3.1 Create ConfigurationValidator
+- [x] 3. Implement configuration validator
+  - [x] 3.1 Create ConfigurationValidator
     - Create `wagtail_heimdallur/validators.py` with `ConfigurationValidator` class
     - Implement `_validate_backends()`: check CLASS path importability, raise `ImproperlyConfigured` on failure
     - Implement `_validate_features()`: reject unrecognized feature names with `ImproperlyConfigured`
@@ -94,7 +94,7 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Implement top-level `validate(settings)` that calls all sub-validators
     - _Requirements: 1.4, 1.14, 1.15, 1.16, 2.4_
 
-  - [ ]* 3.2 Write property tests for configuration validator
+  - [x]* 3.2 Write property tests for configuration validator
     - **Property 7: Invalid backend references in routing rejected**
     - **Property 8: Unrecognized feature names rejected**
     - Create `tests/test_validators.py` with Hypothesis strategies for invalid settings
