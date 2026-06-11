@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.tox/
+node_modules/
+dist/
+build/
+*.egg-info/
+demo/db.sqlite3
+demo/media/
+demo/static/

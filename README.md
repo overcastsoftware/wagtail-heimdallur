@@ -100,6 +100,12 @@ MALSTADUR_API_KEY=your-key docker compose up demo
 
 If `MALSTADUR_API_KEY` is not provided, the demo still starts. The demo settings keep the backend configured with an empty key so local pages, admin wiring, and configuration checks can be inspected before credentials are available.
 
+Create an admin user in another shell:
+
+```bash
+docker compose run demo python demo/manage.py createsuperuser
+```
+
 Sample Icelandic content is defined in `demo/home/fixtures/sample_pages.json` for projects that want to load starter content.
 
 ## Development

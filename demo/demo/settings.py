@@ -9,7 +9,7 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
-    "demo.home",
+    "home",
     "wagtail_heimdallur",
     "wagtail.contrib.forms",
     "wagtail.contrib.redirects",
@@ -65,6 +65,10 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 WAGTAIL_SITE_NAME = "Wagtail-Heimdallur Demo"
+WAGTAILADMIN_BASE_URL = os.environ.get(
+    "WAGTAILADMIN_BASE_URL",
+    "http://localhost:8000",
+)
 
 MALSTADUR_API_KEY = os.environ.get("MALSTADUR_API_KEY", "")
 
