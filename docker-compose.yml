@@ -1,0 +1,17 @@
+# Docker Compose for wagtail-heimdallur development and testing
+# Usage:
+#   docker compose run tests              - Run full test suite (pytest)
+#   docker compose run tests tox          - Run tox matrix testing
+#   docker compose run tests pytest <path> - Run specific test file or function
+
+services:
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=tests.settings

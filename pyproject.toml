@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wagtail-heimdallur"
+version = "0.1.0"
+description = "Wagtail CMS plugin providing inline proofreading, inline translation, and page-level translation capabilities."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Wagtail-Heimdallur Contributors" },
+]
+keywords = ["wagtail", "django", "translation", "proofreading", "icelandic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Framework :: Wagtail",
+    "Framework :: Wagtail :: 6",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+]
+dependencies = [
+    "Django>=4.2",
+    "wagtail>=6.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-django>=4.5",
+    "hypothesis>=6.0",
+    "tox>=4.0",
+    "pytest-httpx>=0.30.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/wagtail-heimdallur/wagtail-heimdallur"
+Repository = "https://github.com/wagtail-heimdallur/wagtail-heimdallur"
+Issues = "https://github.com/wagtail-heimdallur/wagtail-heimdallur/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["wagtail_heimdallur"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"wagtail_heimdallur/static" = "wagtail_heimdallur/static"
+"wagtail_heimdallur/templates" = "wagtail_heimdallur/templates"
