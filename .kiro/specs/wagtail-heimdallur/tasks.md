@@ -100,11 +100,11 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Create `tests/test_validators.py` with Hypothesis strategies for invalid settings
     - **Validates: Requirements 1.14, 1.16**
 
-- [ ] 4. Checkpoint - Core architecture validated
+- [x] 4. Checkpoint - Core architecture validated
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 5. Implement Miðeind backend
-  - [ ] 5.1 Implement MideindBackend class
+- [x] 5. Implement Miðeind backend
+  - [x] 5.1 Implement MideindBackend class
     - Create `wagtail_heimdallur/backends/mideind.py` with `MideindBackend` implementing both `BaseTranslationBackend` and `BaseProofreadingBackend`
     - Implement `proofread()`: POST to `/v1/grammar` with `X-API-KEY` header, parse response into `ProofreadingResult`
     - Map camelCase API response fields to snake_case `DiffAnnotation` fields
@@ -114,12 +114,12 @@ This plan implements Wagtail-Heimdallur as a Wagtail CMS plugin providing inline
     - Use configurable timeout (default 30s) from OPTIONS
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 8.3, 8.5_
 
-  - [ ]* 5.2 Write property test for Málstaður response parsing
+  - [x]* 5.2 Write property test for Málstaður response parsing
     - **Property 11: Málstaður response parsing preserves all annotations**
     - Create `tests/test_backends/test_mideind.py` with Hypothesis strategy for mock Málstaður responses
     - **Validates: Requirements 3.3**
 
-  - [ ]* 5.3 Write unit tests for MideindBackend error handling
+  - [x]* 5.3 Write unit tests for MideindBackend error handling
     - Test HTTP 401/403 raises `AuthenticationError`
     - Test HTTP 504 and timeout raises `BackendTimeoutError`
     - Test HTTP 400 raises `BackendRequestError`

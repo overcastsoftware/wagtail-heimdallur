@@ -1,0 +1,201 @@
+"""Tests for the Miðeind Málstaður backend."""
+
+import httpx
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from wagtail_heimdallur.backends.mideind import MideindBackend
+from wagtail_heimdallur.exceptions import (
+    AuthenticationError,
+    BackendError,
+    BackendRequestError,
+    BackendTimeoutError,
+    UnsupportedLanguagePairError,
+)
+
+
+BASE_URL = "https://malstadur.test"
+
+
+def mideind_backend(**kwargs):
+    return MideindBackend(
+        api_key="test-key",
+        base_url=BASE_URL,
+        supported_language_pairs=[("is", "en")],
+        **kwargs,
+    )
+
+
+camel_annotation_strategy = st.fixed_dictionaries(
+    {
+        "origStartIdx": st.integers(min_value=0, max_value=1000),
+        "origEndIdx": st.integers(min_value=0, max_value=1200),
+        "origString": st.text(max_size=50),
+        "changedStartIdx": st.integers(min_value=0, max_value=1000),
+        "changedEndIdx": st.integers(min_value=0, max_value=1200),
+        "changedString": st.text(max_size=50),
+        "changeType": st.sampled_from(
+            ["spelling", "grammar", "style", "punctuation"]
+        ),
+    }
+).filter(
+    lambda annotation: annotation["origStartIdx"] <= annotation["origEndIdx"]
+    and annotation["changedStartIdx"] <= annotation["changedEndIdx"]
+)
+
+
+@given(
+    original_text=st.text(max_size=200),
+    changed_text=st.text(max_size=200),
+    annotations=st.lists(camel_annotation_strategy, max_size=20),
+)
+@settings(max_examples=50)
+def test_malstadur_response_parsing_preserves_all_annotations(
+    original_text,
+    changed_text,
+    annotations,
+):
+    """Property 11: Málstaður response parsing preserves all annotations."""
+    result = MideindBackend._parse_proofreading_response(
+        {
+            "originalText": original_text,
+            "changedText": changed_text,
+            "annotations": annotations,
+        }
+    )
+
+    assert result.original_text == original_text
+    assert result.corrected_text == changed_text
+    assert len(result.annotations) == len(annotations)
+
+    for parsed, raw in zip(result.annotations, annotations):
+        assert parsed.orig_start_idx == raw["origStartIdx"]
+        assert parsed.orig_end_idx == raw["origEndIdx"]
+        assert parsed.orig_string == raw["origString"]
+        assert parsed.changed_start_idx == raw["changedStartIdx"]
+        assert parsed.changed_end_idx == raw["changedEndIdx"]
+        assert parsed.changed_string == raw["changedString"]
+        assert parsed.change_type == raw["changeType"]
+
+
+def test_proofread_posts_to_grammar_endpoint_with_api_key(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        json={
+            "originalText": "halló heimur",
+            "changedText": "halló heimur",
+            "annotations": [],
+        },
+    )
+
+    result = mideind_backend().proofread("halló heimur", "is")
+    request = httpx_mock.get_request()
+
+    assert result.original_text == "halló heimur"
+    assert request.headers["X-API-KEY"] == "test-key"
+    assert request.url == f"{BASE_URL}/v1/grammar"
+
+
+def test_translate_posts_to_translate_endpoint(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/translate",
+        json={"translatedText": "hello"},
+    )
+
+    result = mideind_backend().translate("halló", "is", "en")
+    request = httpx_mock.get_request()
+
+    assert result == "hello"
+    assert request.headers["X-API-KEY"] == "test-key"
+    assert request.url == f"{BASE_URL}/v1/translate"
+
+
+def test_get_supported_language_pairs_queries_api_when_not_configured(httpx_mock):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/v1/translate/languages",
+        json={
+            "languagePairs": [
+                {
+                    "sourceLanguage": "is",
+                    "targetLanguage": "en",
+                },
+                {
+                    "sourceLanguage": "en",
+                    "targetLanguage": "is",
+                },
+            ],
+        },
+    )
+    backend = MideindBackend(api_key="test-key", base_url=BASE_URL)
+
+    assert backend.get_supported_language_pairs() == [("is", "en"), ("en", "is")]
+    assert backend.get_supported_language_pairs() == [("is", "en"), ("en", "is")]
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_authentication_errors_raise_authentication_error(httpx_mock, status_code):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=status_code,
+    )
+
+    with pytest.raises(AuthenticationError):
+        mideind_backend().proofread("text", "is")
+
+
+def test_504_raises_backend_timeout_error(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=504,
+    )
+
+    with pytest.raises(BackendTimeoutError):
+        mideind_backend().proofread("text", "is")
+
+
+def test_request_timeout_raises_backend_timeout_error(httpx_mock):
+    httpx_mock.add_exception(
+        httpx.TimeoutException("timed out"),
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+    )
+
+    with pytest.raises(BackendTimeoutError):
+        mideind_backend(timeout=0.01).proofread("text", "is")
+
+
+def test_400_raises_backend_request_error(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=400,
+        text="bad request",
+    )
+
+    with pytest.raises(BackendRequestError):
+        mideind_backend().proofread("text", "is")
+
+
+def test_500_raises_backend_error(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=500,
+    )
+
+    with pytest.raises(BackendError):
+        mideind_backend().proofread("text", "is")
+
+
+def test_unsupported_language_pair_raises_without_http_request(httpx_mock):
+    with pytest.raises(UnsupportedLanguagePairError):
+        mideind_backend().translate("halló", "is", "de")
+
+    assert not httpx_mock.get_requests()

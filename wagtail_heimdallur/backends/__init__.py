@@ -4,10 +4,12 @@ from wagtail_heimdallur.backends.base import (
     BaseProofreadingBackend,
     BaseTranslationBackend,
 )
+from wagtail_heimdallur.backends.mideind import MideindBackend
 from wagtail_heimdallur.backends.registry import BackendRegistry
 
 __all__ = [
     "BackendRegistry",
     "BaseProofreadingBackend",
     "BaseTranslationBackend",
+    "MideindBackend",
 ]
