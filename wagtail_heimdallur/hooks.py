@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from django.urls import include, path, reverse
+from django.utils.translation import gettext_lazy as _
 from django.templatetags.static import static
 from django.utils.html import format_html
 from wagtail import hooks as wagtail_hooks
+from wagtail.admin.menu import AdminOnlyMenuItem
 
 from wagtail_heimdallur.conf import DEFAULTS
 from wagtail_heimdallur.engines.page_translation import connect_page_translation_signal
@@ -51,6 +54,17 @@ def get_hook_registrations(settings: dict) -> list[tuple[str, Callable]]:
             ]
         )
 
+    if features["page_translation"]:
+        registrations.extend(
+            [
+                ("register_admin_urls", register_translation_queue_admin_urls),
+                (
+                    "register_reports_menu_item",
+                    register_translation_queue_report_menu_item,
+                ),
+            ]
+        )
+
     return registrations
 
 
@@ -67,6 +81,30 @@ def insert_editor_css() -> str:
     return format_html(
         '<link rel="stylesheet" href="{}">',
         static(EDITOR_CSS_PATH),
+    )
+
+
+def register_translation_queue_admin_urls():
+    """Register Wagtail admin URLs for Heimdallur reports."""
+    return [
+        path(
+            "heimdallur/",
+            include(
+                "wagtail_heimdallur.admin_urls",
+                namespace="wagtail_heimdallur_admin",
+            ),
+        ),
+    ]
+
+
+def register_translation_queue_report_menu_item():
+    """Add the translation queue report to Wagtail's Reports menu."""
+    return AdminOnlyMenuItem(
+        _("Translation queue"),
+        reverse("wagtail_heimdallur_admin:translation_queue"),
+        name="heimdallur-translation-queue",
+        icon_name="tasks",
+        order=1250,
     )
 
 

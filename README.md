@@ -71,6 +71,16 @@ Validate configuration and inspect enabled features, backends, and routing:
 python manage.py heimdallur_check
 ```
 
+Page-level translations are queued when Wagtail copies a page for translation.
+Process queued jobs with:
+
+```bash
+python manage.py process_heimdallur_translation_queue
+```
+
+Use `--limit` to cap how many queued jobs a worker processes in one run. Queue
+state is visible in the Wagtail admin under **Reports > Translation queue**.
+
 ## Frontend Assets
 
 TypeScript sources live in `wagtail_heimdallur/client`. To rebuild the static editor bundle:

@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import List
 import json
 
+from django.db import models
+from django.utils import timezone
+
 
 @dataclass
 class DiffAnnotation:
@@ -85,4 +88,119 @@ class ProofreadingResult:
             annotations=[
                 DiffAnnotation.from_dict(a) for a in data["annotations"]
             ],
+        )
+
+
+class TranslationJobQuerySet(models.QuerySet):
+    """Query helpers for persisted page translation jobs."""
+
+    def pending(self):
+        return self.filter(status=TranslationJob.Status.QUEUED)
+
+
+class TranslationJob(models.Model):
+    """Durable status record for a queued page translation."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        COMPLETED_WITH_WARNINGS = (
+            "completed_with_warnings",
+            "Completed with warnings",
+        )
+        FAILED = "failed", "Failed"
+
+    source_page = models.ForeignKey(
+        "wagtailcore.Page",
+        related_name="+",
+        on_delete=models.CASCADE,
+    )
+    target_page = models.ForeignKey(
+        "wagtailcore.Page",
+        related_name="+",
+        on_delete=models.CASCADE,
+    )
+    source_language = models.CharField(max_length=20)
+    target_language = models.CharField(max_length=20)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    translated_fields = models.JSONField(default=list, blank=True)
+    skipped_fields = models.JSONField(default=list, blank=True)
+    error_message = models.TextField(blank=True)
+    remote_task_id = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    objects = TranslationJobQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.source_page_id}->{self.target_page_id} "
+            f"{self.source_language}->{self.target_language} ({self.status})"
+        )
+
+    def mark_running(self) -> None:
+        self.status = self.Status.RUNNING
+        self.attempts += 1
+        self.started_at = timezone.now()
+        self.error_message = ""
+        self.save(
+            update_fields=[
+                "status",
+                "attempts",
+                "started_at",
+                "error_message",
+                "updated_at",
+            ]
+        )
+
+    def mark_completed(self, result) -> None:
+        self.status = (
+            self.Status.COMPLETED_WITH_WARNINGS
+            if result.completed_with_warnings
+            else self.Status.COMPLETED
+        )
+        self.translated_fields = list(result.translated_fields)
+        self.skipped_fields = [
+            {"field_name": skipped.field_name, "error": skipped.error}
+            for skipped in result.skipped_fields
+        ]
+        self.error_message = ""
+        self.completed_at = timezone.now()
+        self.save(
+            update_fields=[
+                "status",
+                "translated_fields",
+                "skipped_fields",
+                "error_message",
+                "completed_at",
+                "updated_at",
+            ]
+        )
+
+    def mark_failed(self, error: Exception) -> None:
+        self.status = self.Status.FAILED
+        self.error_message = str(error)
+        self.completed_at = timezone.now()
+        self.save(
+            update_fields=[
+                "status",
+                "error_message",
+                "completed_at",
+                "updated_at",
+            ]
         )

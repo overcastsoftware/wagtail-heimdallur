@@ -1,0 +1,78 @@
+{% extends "wagtailadmin/base.html" %}
+{% load i18n %}
+
+{% block titletag %}{% trans "Translation queue" %}{% endblock %}
+
+{% block content %}
+    {% include "wagtailadmin/shared/header.html" with title="Translation queue" icon="tasks" %}
+
+    <div class="nice-padding">
+        <form method="get" class="w-mb-6">
+            <label for="id_status">{% trans "Status" %}</label>
+            <select id="id_status" name="status">
+                <option value="">{% trans "All statuses" %}</option>
+                {% for value, label in status_choices %}
+                    <option value="{{ value }}"{% if status == value %} selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="button">{% trans "Filter" %}</button>
+        </form>
+
+        <table class="listing">
+            <thead>
+                <tr>
+                    <th>{% trans "Created" %}</th>
+                    <th>{% trans "Status" %}</th>
+                    <th>{% trans "Source" %}</th>
+                    <th>{% trans "Target" %}</th>
+                    <th>{% trans "Languages" %}</th>
+                    <th>{% trans "Attempts" %}</th>
+                    <th>{% trans "Translated" %}</th>
+                    <th>{% trans "Skipped / error" %}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                    <tr>
+                        <td>{{ job.created_at }}</td>
+                        <td>{{ job.get_status_display }}</td>
+                        <td>{{ job.source_page.title }}</td>
+                        <td>{{ job.target_page.title }}</td>
+                        <td>{{ job.source_language }} -> {{ job.target_language }}</td>
+                        <td>{{ job.attempts }}</td>
+                        <td>{{ job.translated_fields|join:", " }}</td>
+                        <td>
+                            {% if job.error_message %}
+                                {{ job.error_message }}
+                            {% elif job.skipped_fields %}
+                                {% for skipped in job.skipped_fields %}
+                                    <div>{{ skipped.field_name }}: {{ skipped.error }}</div>
+                                {% endfor %}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr>
+                        <td colspan="8">{% trans "No translation jobs found." %}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if is_paginated %}
+            <nav class="pagination" aria-label="{% trans 'Pagination' %}">
+                {% if page_obj.has_previous %}
+                    <a href="?page={{ page_obj.previous_page_number }}{% if status %}&status={{ status }}{% endif %}" class="button button-secondary">{% trans "Previous" %}</a>
+                {% endif %}
+                <span>
+                    {% blocktrans with page=page_obj.number pages=paginator.num_pages %}Page {{ page }} of {{ pages }}{% endblocktrans %}
+                </span>
+                {% if page_obj.has_next %}
+                    <a href="?page={{ page_obj.next_page_number }}{% if status %}&status={{ status }}{% endif %}" class="button button-secondary">{% trans "Next" %}</a>
+                {% endif %}
+            </nav>
+        {% endif %}
+    </div>
+{% endblock %}

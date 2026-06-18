@@ -8,6 +8,7 @@ from typing import Any
 
 from wagtail_heimdallur.engines.translation import TranslationEngine
 from wagtail_heimdallur.exceptions import BackendError
+from wagtail_heimdallur.models import TranslationJob
 
 logger = logging.getLogger(__name__)
 
@@ -179,9 +180,19 @@ def translate_copied_page(
     return page_engine.translate_page(source_obj, target_obj)
 
 
+def queue_copied_page_translation(source_obj: object, target_obj: object):
+    """Persist a queued translation job for a copied Wagtail object."""
+    return TranslationJob.objects.create(
+        source_page=source_obj,
+        target_page=target_obj,
+        source_language=_language_code(source_obj),
+        target_language=_language_code(target_obj),
+    )
+
+
 def handle_copy_for_translation_done(sender, source_obj, target_obj, **kwargs):
     """Signal handler for Wagtail's copy_for_translation_done signal."""
-    translate_copied_page(source_obj, target_obj)
+    queue_copied_page_translation(source_obj, target_obj)
 
 
 def connect_page_translation_signal() -> None:

@@ -43,6 +43,26 @@ def hook_names_for(features):
     ]
 
 
+def expected_hook_names(features):
+    names = []
+    if features["inline_proofreading"] or features["inline_translation"]:
+        names.extend(
+            [
+                "register_rich_text_features",
+                "insert_editor_js",
+                "insert_editor_css",
+            ]
+        )
+    if features["page_translation"]:
+        names.extend(
+            [
+                "register_admin_urls",
+                "register_reports_menu_item",
+            ]
+        )
+    return names
+
+
 @given(features=feature_toggle_values)
 @settings(max_examples=50)
 def test_feature_toggle_conditional_registration(features):
@@ -55,14 +75,7 @@ def test_feature_toggle_conditional_registration(features):
     }
     hook_names = hook_names_for(features)
 
-    if merged["inline_proofreading"] or merged["inline_translation"]:
-        assert hook_names == [
-            "register_rich_text_features",
-            "insert_editor_js",
-            "insert_editor_css",
-        ]
-    else:
-        assert hook_names == []
+    assert hook_names == expected_hook_names(merged)
 
 
 @given(features=feature_toggle_values)
@@ -112,11 +125,13 @@ def test_feature_toggles_default_to_enabled():
 
     rich_text_hook(registry)
 
-    assert hook_names_for({}) == [
-        "register_rich_text_features",
-        "insert_editor_js",
-        "insert_editor_css",
-    ]
+    assert hook_names_for({}) == expected_hook_names(
+        {
+            "inline_proofreading": True,
+            "inline_translation": True,
+            "page_translation": True,
+        }
+    )
     assert {
         feature_name
         for editor_name, feature_name, plugin in registry.editor_plugins

@@ -2,12 +2,33 @@
 
 from django.apps import AppConfig
 
-from wagtail_heimdallur.backends import BackendRegistry
-from wagtail_heimdallur.conf import get_settings
-from wagtail_heimdallur.hooks import register_heimdallur_hooks
-from wagtail_heimdallur.validators import ConfigurationValidator
-
 backend_registry = None
+
+
+def get_settings():
+    from wagtail_heimdallur.conf import get_settings as get_heimdallur_settings
+
+    return get_heimdallur_settings()
+
+
+class ConfigurationValidator:
+    def __new__(cls, *args, **kwargs):
+        from wagtail_heimdallur.validators import ConfigurationValidator as Validator
+
+        return Validator(*args, **kwargs)
+
+
+class BackendRegistry:
+    def __new__(cls, *args, **kwargs):
+        from wagtail_heimdallur.backends import BackendRegistry as Registry
+
+        return Registry(*args, **kwargs)
+
+
+def register_heimdallur_hooks(settings):
+    from wagtail_heimdallur.hooks import register_heimdallur_hooks as register_hooks
+
+    return register_hooks(settings)
 
 
 class WagtailHeimdallurConfig(AppConfig):
