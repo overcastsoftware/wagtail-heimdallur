@@ -1,5 +1,7 @@
 """Tests for the Miðeind Málstaður backend."""
 
+import json
+
 import httpx
 import pytest
 from hypothesis import given, settings
@@ -59,9 +61,13 @@ def test_malstadur_response_parsing_preserves_all_annotations(
     """Property 11: Málstaður response parsing preserves all annotations."""
     result = MideindBackend._parse_proofreading_response(
         {
-            "originalText": original_text,
-            "changedText": changed_text,
-            "annotations": annotations,
+            "results": [
+                {
+                    "originalText": original_text,
+                    "changedText": changed_text,
+                    "diffAnnotations": annotations,
+                }
+            ],
         }
     )
 
@@ -84,9 +90,13 @@ def test_proofread_posts_to_grammar_endpoint_with_api_key(httpx_mock):
         method="POST",
         url=f"{BASE_URL}/v1/grammar",
         json={
-            "originalText": "halló heimur",
-            "changedText": "halló heimur",
-            "annotations": [],
+            "results": [
+                {
+                    "originalText": "halló heimur",
+                    "changedText": "halló heimur",
+                    "diffAnnotations": [],
+                }
+            ],
         },
     )
 
@@ -96,6 +106,30 @@ def test_proofread_posts_to_grammar_endpoint_with_api_key(httpx_mock):
     assert result.original_text == "halló heimur"
     assert request.headers["X-API-KEY"] == "test-key"
     assert request.url == f"{BASE_URL}/v1/grammar"
+    assert json.loads(request.content) == {"texts": ["halló heimur"]}
+
+
+def test_malstadur_legacy_proofreading_response_shape_still_parses():
+    result = MideindBackend._parse_proofreading_response(
+        {
+            "originalText": "halló",
+            "changedText": "Halló",
+            "annotations": [
+                {
+                    "origStartIdx": 0,
+                    "origEndIdx": 1,
+                    "origString": "h",
+                    "changedStartIdx": 0,
+                    "changedEndIdx": 1,
+                    "changedString": "H",
+                    "changeType": "capitalization",
+                }
+            ],
+        }
+    )
+
+    assert result.corrected_text == "Halló"
+    assert result.annotations[0].changed_string == "H"
 
 
 def test_translate_posts_to_translate_endpoint(httpx_mock):
@@ -111,6 +145,86 @@ def test_translate_posts_to_translate_endpoint(httpx_mock):
     assert result == "hello"
     assert request.headers["X-API-KEY"] == "test-key"
     assert request.url == f"{BASE_URL}/v1/translate"
+    assert json.loads(request.content) == {
+        "text": "halló",
+        "targetLanguage": "en",
+    }
+
+
+def test_translate_accepts_empty_translated_text(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/translate",
+        json={"translatedText": ""},
+    )
+
+    assert mideind_backend().translate("halló", "is", "en") == ""
+
+
+def test_translate_rejects_unexpected_response_shape(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/translate",
+        json={"taskId": "abc123"},
+    )
+
+    with pytest.raises(BackendError, match="taskId"):
+        mideind_backend().translate("halló", "is", "en")
+
+
+def test_start_text_translation_posts_text_and_returns_task_id(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/translate/text",
+        status_code=201,
+        json={
+            "taskId": "task-123",
+            "error": None,
+            "estimatedUsage": {
+                "units": 5,
+                "unitType": "characters",
+                "cost": 1,
+            },
+        },
+    )
+
+    task_id = mideind_backend().start_text_translation(
+        "halló",
+        "is",
+        "en",
+    )
+    request = httpx_mock.get_request()
+
+    assert task_id == "task-123"
+    assert request.url == f"{BASE_URL}/v1/translate/text"
+    assert json.loads(request.content) == {
+        "text": "halló",
+        "targetLanguage": "en",
+    }
+
+
+def test_get_text_translation_status_parses_completed_text(httpx_mock):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/v1/translate/text/task-123",
+        json={
+            "taskId": "task-123",
+            "status": "completed",
+            "progress": 100,
+            "error": None,
+            "message": None,
+            "result": {
+                "text": "hello",
+                "targetLanguage": "en",
+            },
+        },
+    )
+
+    status = mideind_backend().get_text_translation_status("task-123")
+
+    assert status.task_id == "task-123"
+    assert status.status == "completed"
+    assert status.text == "hello"
 
 
 def test_get_supported_language_pairs_queries_api_when_not_configured(httpx_mock):
@@ -146,6 +260,18 @@ def test_authentication_errors_raise_authentication_error(httpx_mock, status_cod
     )
 
     with pytest.raises(AuthenticationError):
+        mideind_backend().proofread("text", "is")
+
+
+def test_authentication_errors_include_api_error_detail(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=403,
+        json={"error": "Insufficient permissions"},
+    )
+
+    with pytest.raises(AuthenticationError, match="Insufficient permissions"):
         mideind_backend().proofread("text", "is")
 
 

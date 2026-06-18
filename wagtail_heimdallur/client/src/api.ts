@@ -1,14 +1,21 @@
 import type { ProofreadingResult, TranslationPair } from "./types";
 
 async function postJson<T>(url: string, payload: object): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+  const csrfToken = getCookie("csrftoken");
+  if (csrfToken) {
+    headers["X-CSRFToken"] = csrfToken;
+  }
+
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers,
+    credentials: "same-origin",
     body: JSON.stringify(payload)
   });
-  const data = await response.json();
+  const data = await parseJsonResponse(response);
   if (!response.ok) {
     throw new Error(data?.error?.message || "Heimdallur request failed");
   }
@@ -42,4 +49,23 @@ export async function fetchLanguagePairs(): Promise<TranslationPair[]> {
     throw new Error(data?.error?.message || "Could not load supported languages");
   }
   return data.translation.language_pairs as TranslationPair[];
+}
+
+function getCookie(name: string): string {
+  const cookies = document.cookie ? document.cookie.split(";") : [];
+  for (const cookie of cookies) {
+    const [rawKey, ...valueParts] = cookie.trim().split("=");
+    if (rawKey === name) {
+      return decodeURIComponent(valueParts.join("="));
+    }
+  }
+  return "";
+}
+
+async function parseJsonResponse(response: Response): Promise<any> {
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!contentType.includes("application/json")) {
+    return {};
+  }
+  return response.json();
 }

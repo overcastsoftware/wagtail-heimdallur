@@ -1,9 +1,22 @@
 """Abstract base classes for Wagtail-Heimdallur backends."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import List, Tuple
 
 from wagtail_heimdallur.models import ProofreadingResult
+
+
+@dataclass
+class TextTranslationStatus:
+    """Status returned by an asynchronous text translation task."""
+
+    task_id: str
+    status: str
+    progress: float = 0
+    text: str | None = None
+    error: str | None = None
+    message: str | None = None
 
 
 class BaseProofreadingBackend(ABC):

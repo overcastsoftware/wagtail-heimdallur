@@ -72,14 +72,33 @@ python manage.py heimdallur_check
 ```
 
 Page-level translations are queued when Wagtail copies a page for translation.
-Process queued jobs with:
+Run the queue command to submit queued page text to Málstaður's asynchronous
+`/v1/translate/text` endpoint, and run it again later to poll running tasks and
+apply completed translations:
 
 ```bash
 python manage.py process_heimdallur_translation_queue
 ```
 
-Use `--limit` to cap how many queued jobs a worker processes in one run. Queue
-state is visible in the Wagtail admin under **Reports > Translation queue**.
+Use `--limit` to cap how many queued or running jobs a worker processes in one
+run. Queue state, task progress, failures, and skipped fields are visible in the
+Wagtail admin under **Reports > Translation queue**. When a page is being
+translated, the source and target edit screens show a warning with a link to the
+queue.
+
+Retry failed or warning jobs after fixing credentials or backend configuration:
+
+```bash
+python manage.py process_heimdallur_translation_queue --retry-failed
+python manage.py process_heimdallur_translation_queue --retry-warnings
+```
+
+If a remote task is stuck, requeue only stale running jobs with an explicit age
+guard:
+
+```bash
+python manage.py process_heimdallur_translation_queue --retry-running --older-than-minutes 60
+```
 
 ## Frontend Assets
 

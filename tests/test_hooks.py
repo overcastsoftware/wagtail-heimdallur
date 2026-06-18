@@ -1,7 +1,11 @@
 """Tests for Wagtail hook registration."""
 
+from types import SimpleNamespace
+
 from hypothesis import given, settings
 from hypothesis import strategies as st
+import pytest
+from wagtail.models import Page
 
 from wagtail_heimdallur.hooks import (
     PROOFREAD_FEATURE,
@@ -10,7 +14,9 @@ from wagtail_heimdallur.hooks import (
     insert_editor_css,
     insert_editor_js,
     register_heimdallur_hooks,
+    show_translation_in_progress_message,
 )
+from wagtail_heimdallur.models import TranslationJob
 
 
 FEATURE_NAMES = [
@@ -58,6 +64,7 @@ def expected_hook_names(features):
             [
                 "register_admin_urls",
                 "register_reports_menu_item",
+                "before_edit_page",
             ]
         )
     return names
@@ -155,3 +162,59 @@ def test_register_heimdallur_hooks_uses_supplied_register_function():
 def test_editor_assets_render_static_tags():
     assert "wagtail_heimdallur/js/heimdallur.js" in insert_editor_js()
     assert "wagtail_heimdallur/css/heimdallur.css" in insert_editor_css()
+
+
+@pytest.mark.django_db
+def test_show_translation_in_progress_message_warns_for_active_target_page(monkeypatch):
+    root = Page.get_first_root_node()
+    source = Page(title="Source page", slug="source-message")
+    target = Page(title="Target page", slug="target-message")
+    root.add_child(instance=source)
+    root.add_child(instance=target)
+    TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.RUNNING,
+    )
+    warnings = []
+
+    def warning(request, message):
+        warnings.append(str(message))
+
+    monkeypatch.setattr("wagtail_heimdallur.hooks.messages.warning", warning)
+
+    show_translation_in_progress_message(SimpleNamespace(), target)
+
+    assert warnings
+    assert "Source page" in warnings[0]
+    assert "running" in warnings[0]
+
+
+@pytest.mark.django_db
+def test_show_translation_in_progress_message_warns_for_active_source_page(monkeypatch):
+    root = Page.get_first_root_node()
+    source = Page(title="Source page", slug="source-origin-message")
+    target = Page(title="Target page", slug="target-origin-message")
+    root.add_child(instance=source)
+    root.add_child(instance=target)
+    TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.QUEUED,
+    )
+    warnings = []
+
+    def warning(request, message):
+        warnings.append(str(message))
+
+    monkeypatch.setattr("wagtail_heimdallur.hooks.messages.warning", warning)
+
+    show_translation_in_progress_message(SimpleNamespace(), source)
+
+    assert warnings
+    assert "Target page" in warnings[0]
+    assert "queued" in warnings[0]

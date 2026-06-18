@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from wagtail_heimdallur.backends.base import (
     BaseProofreadingBackend,
     BaseTranslationBackend,
+    TextTranslationStatus,
 )
 from wagtail_heimdallur.exceptions import (
     AuthenticationError,
@@ -62,7 +64,7 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
 
         response = self._post(
             "/v1/grammar",
-            json={"text": text, "language": language},
+            json={"texts": [text]},
         )
         return self._parse_proofreading_response(response.json())
 
@@ -79,12 +81,49 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
             "/v1/translate",
             json={
                 "text": text,
-                "source_language": source_language,
-                "target_language": target_language,
+                "targetLanguage": target_language,
             },
         )
         data = response.json()
-        return data.get("translatedText") or data["translated_text"]
+        return self._parse_translation_response(data)
+
+    def start_text_translation(
+        self,
+        text: str,
+        source_language: str,
+        target_language: str,
+    ) -> str:
+        """Start an asynchronous text translation task."""
+        pair = (source_language, target_language)
+        if pair not in self.get_supported_language_pairs():
+            raise UnsupportedLanguagePairError(
+                "Miðeind backend does not support translation pair "
+                f"'{source_language}' -> '{target_language}'."
+            )
+
+        response = self._post(
+            "/v1/translate/text",
+            json={
+                "text": text,
+                "targetLanguage": target_language,
+            },
+        )
+        data = response.json()
+        error = data.get("error")
+        if error:
+            raise BackendError(f"Miðeind text translation task failed: {error}")
+        task_id = data.get("taskId") or data.get("id")
+        if not task_id:
+            raise BackendError(
+                "Miðeind text translation response did not include a task id. "
+                f"Response keys: {', '.join(sorted(data.keys())) or '(none)'}."
+            )
+        return task_id
+
+    def get_text_translation_status(self, task_id: str) -> TextTranslationStatus:
+        """Fetch status for an asynchronous text translation task."""
+        response = self._get(f"/v1/translate/text/{quote(task_id)}")
+        return self._parse_text_translation_status(response.json(), task_id)
 
     def get_supported_languages(self) -> list[str]:
         """Return proofreading languages supported by this backend."""
@@ -154,6 +193,9 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
 
         body = response.text
         if status_code in {401, 403}:
+            detail = self._error_detail(response)
+            if detail:
+                raise AuthenticationError(f"Miðeind authentication failed: {detail}")
             raise AuthenticationError(
                 "Miðeind API credentials are invalid, missing, or exhausted."
             )
@@ -168,12 +210,37 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
             f"Miðeind API returned unexpected HTTP status {status_code}: {body}"
         )
 
+    @staticmethod
+    def _error_detail(response: httpx.Response) -> str:
+        try:
+            data = response.json()
+        except ValueError:
+            return response.text
+
+        detail = data.get("error") or data.get("message") or data.get("details")
+        if isinstance(detail, str):
+            return detail
+        if detail:
+            return str(detail)
+        return ""
+
     @classmethod
     def _parse_proofreading_response(cls, data: dict[str, Any]) -> ProofreadingResult:
         """Parse a Málstaður grammar response into a ProofreadingResult."""
+        if "results" in data:
+            results = data.get("results") or []
+            if not results:
+                raise BackendError(
+                    "Miðeind grammar response did not include any results."
+                )
+            data = results[0]
+
         annotations = [
             cls._parse_annotation(annotation)
-            for annotation in data.get("annotations", [])
+            for annotation in data.get(
+                "diffAnnotations",
+                data.get("annotations", []),
+            )
         ]
         return ProofreadingResult(
             original_text=data.get("originalText", data.get("original_text", "")),
@@ -191,6 +258,39 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
             changed_end_idx=data["changedEndIdx"],
             changed_string=data["changedString"],
             change_type=data["changeType"],
+        )
+
+    @staticmethod
+    def _parse_translation_response(data: dict[str, Any]) -> str:
+        for key in ("text", "translatedText", "translated_text", "translation"):
+            if key in data:
+                value = data[key]
+                if isinstance(value, str):
+                    return value
+                raise BackendError(
+                    "Miðeind translation response field "
+                    f"'{key}' was not a string."
+                )
+
+        raise BackendError(
+            "Miðeind translation response did not include translated text. "
+            f"Response keys: {', '.join(sorted(data.keys())) or '(none)'}."
+        )
+
+    @staticmethod
+    def _parse_text_translation_status(
+        data: dict[str, Any],
+        fallback_task_id: str,
+    ) -> TextTranslationStatus:
+        result = data.get("result") or {}
+        text = result.get("text") if isinstance(result, dict) else None
+        return TextTranslationStatus(
+            task_id=data.get("taskId", fallback_task_id),
+            status=data.get("status", "not_found"),
+            progress=data.get("progress", 0),
+            text=text,
+            error=data.get("error"),
+            message=data.get("message"),
         )
 
     @staticmethod

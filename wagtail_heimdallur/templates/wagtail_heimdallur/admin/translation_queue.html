@@ -27,6 +27,7 @@
                     <th>{% trans "Target" %}</th>
                     <th>{% trans "Languages" %}</th>
                     <th>{% trans "Attempts" %}</th>
+                    <th>{% trans "Progress" %}</th>
                     <th>{% trans "Translated" %}</th>
                     <th>{% trans "Skipped / error" %}</th>
                 </tr>
@@ -40,6 +41,7 @@
                         <td>{{ job.target_page.title }}</td>
                         <td>{{ job.source_language }} -> {{ job.target_language }}</td>
                         <td>{{ job.attempts }}</td>
+                        <td>{{ job.remote_progress_label }}</td>
                         <td>{{ job.translated_fields|join:", " }}</td>
                         <td>
                             {% if job.error_message %}
@@ -55,7 +57,7 @@
                     </tr>
                 {% empty %}
                     <tr>
-                        <td colspan="8">{% trans "No translation jobs found." %}</td>
+                        <td colspan="9">{% trans "No translation jobs found." %}</td>
                     </tr>
                 {% endfor %}
             </tbody>

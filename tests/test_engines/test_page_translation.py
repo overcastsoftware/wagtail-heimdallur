@@ -149,3 +149,43 @@ def test_partial_field_failure_does_not_prevent_remaining_translations(
     assert [skipped.field_name for skipped in result.skipped_fields] == ["body"]
     assert target._heimdallur_skipped_translation_fields == ["body"]
     assert target.saved_revision is True
+
+
+def test_page_translation_collects_texts_in_field_order():
+    source = Page(
+        title="Titill",
+        body=RichText("Meginmál"),
+        stream=[{"type": "paragraph", "value": "Straumur"}],
+        locale=Locale("is"),
+    )
+
+    texts = PageTranslationEngine().collect_texts(source)
+
+    assert texts == ["Titill", "Meginmál", "Straumur"]
+
+
+def test_page_translation_applies_translated_texts_in_field_order():
+    source = Page(
+        title="Titill",
+        body=RichText("Meginmál"),
+        stream=[{"type": "paragraph", "value": "Straumur"}],
+        locale=Locale("is"),
+    )
+    target = Page(
+        title="Titill",
+        body=RichText("Meginmál"),
+        stream=source.stream,
+        locale=Locale("en"),
+    )
+
+    result = PageTranslationEngine().apply_translated_texts(
+        source,
+        target,
+        ["Title", "Body", "Stream"],
+    )
+
+    assert target.title == "Title"
+    assert target.body == RichText("Body")
+    assert target.stream == [{"type": "paragraph", "value": "Stream"}]
+    assert result.translated_fields == ["title", "body", "stream"]
+    assert target.saved_revision is True

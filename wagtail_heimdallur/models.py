@@ -97,6 +97,14 @@ class TranslationJobQuerySet(models.QuerySet):
     def pending(self):
         return self.filter(status=TranslationJob.Status.QUEUED)
 
+    def processable(self):
+        return self.filter(
+            status__in=[
+                TranslationJob.Status.QUEUED,
+                TranslationJob.Status.RUNNING,
+            ]
+        )
+
 
 class TranslationJob(models.Model):
     """Durable status record for a queued page translation."""
@@ -134,6 +142,7 @@ class TranslationJob(models.Model):
     skipped_fields = models.JSONField(default=list, blank=True)
     error_message = models.TextField(blank=True)
     remote_task_id = models.CharField(max_length=255, blank=True)
+    remote_tasks = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -153,6 +162,38 @@ class TranslationJob(models.Model):
             f"{self.source_language}->{self.target_language} ({self.status})"
         )
 
+    @property
+    def remote_task_count(self) -> int:
+        return len(self.remote_tasks)
+
+    @property
+    def completed_remote_task_count(self) -> int:
+        return sum(
+            1
+            for task in self.remote_tasks
+            if task.get("status") == "completed"
+        )
+
+    @property
+    def remote_progress_percent(self) -> int | None:
+        if not self.remote_tasks:
+            return None
+        progress_values = [
+            100 if task.get("status") == "completed" else task.get("progress", 0)
+            for task in self.remote_tasks
+        ]
+        return round(sum(progress_values) / len(progress_values))
+
+    @property
+    def remote_progress_label(self) -> str:
+        if not self.remote_tasks:
+            return "-"
+        progress = self.remote_progress_percent
+        return (
+            f"{self.completed_remote_task_count}/{self.remote_task_count} "
+            f"completed ({progress}%)"
+        )
+
     def mark_running(self) -> None:
         self.status = self.Status.RUNNING
         self.attempts += 1
@@ -168,6 +209,28 @@ class TranslationJob(models.Model):
             ]
         )
 
+    def mark_remote_tasks_submitted(self, remote_tasks: list[dict]) -> None:
+        self.status = self.Status.RUNNING
+        self.remote_tasks = remote_tasks
+        self.remote_task_id = remote_tasks[0]["task_id"] if remote_tasks else ""
+        self.error_message = ""
+        self.save(
+            update_fields=[
+                "status",
+                "remote_task_id",
+                "remote_tasks",
+                "error_message",
+                "updated_at",
+            ]
+        )
+
+    @staticmethod
+    def _serialize_skipped_fields(result) -> list[dict[str, str]]:
+        return [
+            {"field_name": skipped.field_name, "error": skipped.error}
+            for skipped in result.skipped_fields
+        ]
+
     def mark_completed(self, result) -> None:
         self.status = (
             self.Status.COMPLETED_WITH_WARNINGS
@@ -175,10 +238,7 @@ class TranslationJob(models.Model):
             else self.Status.COMPLETED
         )
         self.translated_fields = list(result.translated_fields)
-        self.skipped_fields = [
-            {"field_name": skipped.field_name, "error": skipped.error}
-            for skipped in result.skipped_fields
-        ]
+        self.skipped_fields = self._serialize_skipped_fields(result)
         self.error_message = ""
         self.completed_at = timezone.now()
         self.save(
@@ -192,14 +252,45 @@ class TranslationJob(models.Model):
             ]
         )
 
-    def mark_failed(self, error: Exception) -> None:
+    def mark_failed(self, error: Exception | str, result=None) -> None:
         self.status = self.Status.FAILED
         self.error_message = str(error)
+        if result is not None:
+            self.translated_fields = list(result.translated_fields)
+            self.skipped_fields = self._serialize_skipped_fields(result)
+        else:
+            self.translated_fields = []
+            self.skipped_fields = []
         self.completed_at = timezone.now()
         self.save(
             update_fields=[
                 "status",
                 "error_message",
+                "translated_fields",
+                "skipped_fields",
+                "completed_at",
+                "updated_at",
+            ]
+        )
+
+    def reset_for_retry(self) -> None:
+        self.status = self.Status.QUEUED
+        self.error_message = ""
+        self.translated_fields = []
+        self.skipped_fields = []
+        self.remote_task_id = ""
+        self.remote_tasks = []
+        self.started_at = None
+        self.completed_at = None
+        self.save(
+            update_fields=[
+                "status",
+                "error_message",
+                "translated_fields",
+                "skipped_fields",
+                "remote_task_id",
+                "remote_tasks",
+                "started_at",
                 "completed_at",
                 "updated_at",
             ]

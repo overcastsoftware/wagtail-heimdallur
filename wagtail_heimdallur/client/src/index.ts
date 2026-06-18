@@ -1,5 +1,11 @@
 export { proofreadText, translateText, fetchLanguagePairs } from "./api";
 export { applyAnnotationCorrection } from "./proofread/correction";
+export {
+  applyAnnotationCorrectionToRaw,
+  applyCorrectedBlockText,
+  getProofreadableBlocks,
+  initRichTextProofreader
+} from "./proofread/richTextProofreader";
 export { ProofreadButton } from "./proofread/ProofreadButton";
 export { AnnotationDecorator } from "./proofread/AnnotationDecorator";
 export { AnnotationPopover } from "./proofread/AnnotationPopover";
@@ -15,7 +21,23 @@ declare global {
 
 window.WagtailHeimdallur = {
   ...(window.WagtailHeimdallur || {}),
-  applyAnnotationCorrection
+  applyAnnotationCorrection,
+  applyAnnotationCorrectionToRaw,
+  applyCorrectedBlockText,
+  getProofreadableBlocks,
+  initRichTextProofreader
 };
 
 import { applyAnnotationCorrection } from "./proofread/correction";
+import {
+  applyAnnotationCorrectionToRaw,
+  applyCorrectedBlockText,
+  getProofreadableBlocks,
+  initRichTextProofreader
+} from "./proofread/richTextProofreader";
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => initRichTextProofreader());
+} else {
+  initRichTextProofreader();
+}

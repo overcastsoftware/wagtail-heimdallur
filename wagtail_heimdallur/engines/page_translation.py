@@ -55,7 +55,7 @@ class PageTranslationEngine:
         try:
             for field_name in _translatable_field_names(source_page):
                 original_value = getattr(source_page, field_name, None)
-                translated_value, skipped = self._translate_value(
+                translated_value, skipped, translated_count = self._translate_value(
                     original_value,
                     source_language,
                     target_language,
@@ -67,7 +67,8 @@ class PageTranslationEngine:
                         continue
 
                 setattr(target_page, field_name, translated_value)
-                result.translated_fields.append(field_name)
+                if translated_count:
+                    result.translated_fields.append(field_name)
 
             _save_draft(target_page)
         finally:
@@ -80,16 +81,89 @@ class PageTranslationEngine:
         )
         return result
 
+    def collect_texts(self, source_page: object) -> list[str]:
+        """Collect page text values in the order they should be translated."""
+        texts: list[str] = []
+        for field_name in _translatable_field_names(source_page):
+            self._collect_texts(
+                getattr(source_page, field_name, None),
+                texts,
+            )
+        return texts
+
+    def start_text_translation(
+        self,
+        text: str,
+        source_language: str,
+        target_language: str,
+    ) -> str:
+        """Start async translation for a single text value."""
+        return self.translation_engine.start_text_translation(
+            text,
+            source_language,
+            target_language,
+        )
+
+    def get_text_translation_status(
+        self,
+        task_id: str,
+        source_language: str,
+        target_language: str,
+    ):
+        """Fetch async text translation status."""
+        return self.translation_engine.get_text_translation_status(
+            task_id,
+            source_language,
+            target_language,
+        )
+
+    def apply_translated_texts(
+        self,
+        source_page: object,
+        target_page: object,
+        translated_texts: list[str],
+    ) -> PageTranslationResult:
+        """Apply translated text values back onto target_page."""
+        translated_texts_iter = iter(translated_texts)
+        result = PageTranslationResult()
+
+        setattr(target_page, "_heimdallur_translation_in_progress", True)
+        try:
+            for field_name in _translatable_field_names(source_page):
+                translated_value, translated_count = self._apply_translated_value(
+                    getattr(source_page, field_name, None),
+                    translated_texts_iter,
+                )
+                setattr(target_page, field_name, translated_value)
+                if translated_count:
+                    result.translated_fields.append(field_name)
+
+            try:
+                next(translated_texts_iter)
+            except StopIteration:
+                pass
+            else:
+                raise BackendError(
+                    "Miðeind returned more translated text values than expected."
+                )
+
+            _save_draft(target_page)
+        finally:
+            setattr(target_page, "_heimdallur_translation_in_progress", False)
+
+        setattr(target_page, "_heimdallur_skipped_translation_fields", [])
+        return result
+
     def _translate_value(
         self,
         value: Any,
         source_language: str,
         target_language: str,
         field_path: str,
-    ) -> tuple[Any, list[SkippedField]]:
+    ) -> tuple[Any, list[SkippedField], int]:
         if isinstance(value, str):
             if value == "":
-                return value, []
+                return value, [], 0
             try:
                 return (
                     self.translation_engine.translate(
@@ -98,27 +172,29 @@ class PageTranslationEngine:
                         target_language,
                     ),
                     [],
+                    1,
                 )
             except BackendError as exc:
                 logger.exception("Skipping page translation field %s", field_path)
-                return value, [SkippedField(field_path, str(exc))]
+                return value, [SkippedField(field_path, str(exc))], 0
 
         if _is_rich_text_like(value):
-            translated_source, skipped = self._translate_value(
+            translated_source, skipped, translated_count = self._translate_value(
                 value.source,
                 source_language,
                 target_language,
                 field_path,
             )
             if skipped:
-                return value, skipped
-            return value.__class__(translated_source), []
+                return value, skipped, translated_count
+            return value.__class__(translated_source), [], translated_count
 
         if isinstance(value, list):
             translated_items = []
             skipped_fields = []
+            translated_count = 0
             for index, item in enumerate(value):
-                translated, skipped = self._translate_value(
+                translated, skipped, item_translated_count = self._translate_value(
                     item,
                     source_language,
                     target_language,
@@ -126,26 +202,28 @@ class PageTranslationEngine:
                 )
                 translated_items.append(translated)
                 skipped_fields.extend(skipped)
-            return translated_items, skipped_fields
+                translated_count += item_translated_count
+            return translated_items, skipped_fields, translated_count
 
         if isinstance(value, tuple):
-            translated_items, skipped = self._translate_value(
+            translated_items, skipped, translated_count = self._translate_value(
                 list(value),
                 source_language,
                 target_language,
                 field_path,
             )
-            return tuple(translated_items), skipped
+            return tuple(translated_items), skipped, translated_count
 
         if isinstance(value, dict):
             translated_data = {}
             skipped_fields = []
+            translated_count = 0
             for key, item in value.items():
                 if key == "type":
                     translated_data[key] = item
                     continue
 
-                translated, skipped = self._translate_value(
+                translated, skipped, item_translated_count = self._translate_value(
                     item,
                     source_language,
                     target_language,
@@ -153,21 +231,117 @@ class PageTranslationEngine:
                 )
                 translated_data[key] = translated
                 skipped_fields.extend(skipped)
-            return translated_data, skipped_fields
+                translated_count += item_translated_count
+            return translated_data, skipped_fields, translated_count
 
         if _is_stream_value_like(value):
             raw_data = value.raw_data
-            translated_raw_data, skipped = self._translate_value(
+            translated_raw_data, skipped, translated_count = self._translate_value(
                 raw_data,
                 source_language,
                 target_language,
                 field_path,
             )
             if hasattr(value, "stream_block") and hasattr(value.stream_block, "to_python"):
-                return value.stream_block.to_python(translated_raw_data), skipped
-            return translated_raw_data, skipped
+                return (
+                    value.stream_block.to_python(translated_raw_data),
+                    skipped,
+                    translated_count,
+                )
+            return translated_raw_data, skipped, translated_count
 
-        return value, []
+        return value, [], 0
+
+    def _collect_texts(self, value: Any, texts: list[str]) -> None:
+        if isinstance(value, str):
+            if value:
+                texts.append(value)
+            return
+
+        if _is_rich_text_like(value):
+            self._collect_texts(value.source, texts)
+            return
+
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                self._collect_texts(item, texts)
+            return
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key != "type":
+                    self._collect_texts(item, texts)
+            return
+
+        if _is_stream_value_like(value):
+            self._collect_texts(value.raw_data, texts)
+
+    def _apply_translated_value(
+        self,
+        value: Any,
+        translated_texts,
+    ) -> tuple[Any, int]:
+        if isinstance(value, str):
+            if value == "":
+                return value, 0
+            try:
+                return next(translated_texts), 1
+            except StopIteration as exc:
+                raise BackendError(
+                    "Miðeind returned fewer translated text values than expected."
+                ) from exc
+
+        if _is_rich_text_like(value):
+            translated_source, translated_count = self._apply_translated_value(
+                value.source,
+                translated_texts,
+            )
+            return value.__class__(translated_source), translated_count
+
+        if isinstance(value, list):
+            translated_items = []
+            translated_count = 0
+            for item in value:
+                translated, item_translated_count = self._apply_translated_value(
+                    item,
+                    translated_texts,
+                )
+                translated_items.append(translated)
+                translated_count += item_translated_count
+            return translated_items, translated_count
+
+        if isinstance(value, tuple):
+            translated_items, translated_count = self._apply_translated_value(
+                list(value),
+                translated_texts,
+            )
+            return tuple(translated_items), translated_count
+
+        if isinstance(value, dict):
+            translated_data = {}
+            translated_count = 0
+            for key, item in value.items():
+                if key == "type":
+                    translated_data[key] = item
+                    continue
+                translated, item_translated_count = self._apply_translated_value(
+                    item,
+                    translated_texts,
+                )
+                translated_data[key] = translated
+                translated_count += item_translated_count
+            return translated_data, translated_count
+
+        if _is_stream_value_like(value):
+            translated_raw_data, translated_count = self._apply_translated_value(
+                value.raw_data,
+                translated_texts,
+            )
+            if hasattr(value, "stream_block") and hasattr(value.stream_block, "to_python"):
+                return value.stream_block.to_python(translated_raw_data), translated_count
+            return translated_raw_data, translated_count
+
+        return value, 0
 
 
 def translate_copied_page(
