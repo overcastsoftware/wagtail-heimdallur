@@ -9,7 +9,6 @@ class ConfigurationValidator:
 
     VALID_FEATURES = {
         "inline_proofreading",
-        "inline_translation",
         "page_translation",
     }
 

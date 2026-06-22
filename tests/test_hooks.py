@@ -8,20 +8,25 @@ import pytest
 from wagtail.models import Page
 
 from wagtail_heimdallur.hooks import (
+    PROOFREAD_CLEAR_FEATURE,
+    PROOFREAD_ENTITY_FEATURE,
     PROOFREAD_FEATURE,
-    TRANSLATE_FEATURE,
     get_hook_registrations,
-    insert_editor_css,
-    insert_editor_js,
     register_heimdallur_hooks,
     show_translation_in_progress_message,
 )
 from wagtail_heimdallur.models import TranslationJob
 
 
+PROOFREAD_FEATURES = {
+    PROOFREAD_FEATURE,
+    PROOFREAD_CLEAR_FEATURE,
+    PROOFREAD_ENTITY_FEATURE,
+}
+
+
 FEATURE_NAMES = [
     "inline_proofreading",
-    "inline_translation",
     "page_translation",
 ]
 
@@ -36,9 +41,14 @@ feature_toggle_values = st.dictionaries(
 class FeatureRegistryRecorder:
     def __init__(self):
         self.editor_plugins = []
+        self.default_features = []
+        self.converter_rules = []
 
     def register_editor_plugin(self, editor_name, feature_name, plugin):
         self.editor_plugins.append((editor_name, feature_name, plugin))
+
+    def register_converter_rule(self, converter_name, feature_name, rule):
+        self.converter_rules.append((converter_name, feature_name, rule))
 
 
 def hook_names_for(features):
@@ -51,14 +61,8 @@ def hook_names_for(features):
 
 def expected_hook_names(features):
     names = []
-    if features["inline_proofreading"] or features["inline_translation"]:
-        names.extend(
-            [
-                "register_rich_text_features",
-                "insert_editor_js",
-                "insert_editor_css",
-            ]
-        )
+    if features["inline_proofreading"]:
+        names.append("register_rich_text_features")
     if features["page_translation"]:
         names.extend(
             [
@@ -76,7 +80,6 @@ def test_feature_toggle_conditional_registration(features):
     """Property 2: hooks register only when inline editor features are enabled."""
     merged = {
         "inline_proofreading": True,
-        "inline_translation": True,
         "page_translation": True,
         **features,
     }
@@ -108,14 +111,11 @@ def test_rich_text_feature_registration_matches_enabled_inline_toggles(features)
     expected_plugins = set()
     merged = {
         "inline_proofreading": True,
-        "inline_translation": True,
         "page_translation": True,
         **features,
     }
     if merged["inline_proofreading"]:
-        expected_plugins.add(PROOFREAD_FEATURE)
-    if merged["inline_translation"]:
-        expected_plugins.add(TRANSLATE_FEATURE)
+        expected_plugins.update(PROOFREAD_FEATURES)
 
     assert plugin_names == expected_plugins
 
@@ -135,17 +135,66 @@ def test_feature_toggles_default_to_enabled():
     assert hook_names_for({}) == expected_hook_names(
         {
             "inline_proofreading": True,
-            "inline_translation": True,
             "page_translation": True,
         }
     )
     assert {
         feature_name
         for editor_name, feature_name, plugin in registry.editor_plugins
-    } == {
-        PROOFREAD_FEATURE,
-        TRANSLATE_FEATURE,
+    } == PROOFREAD_FEATURES
+    for feature_name in PROOFREAD_FEATURES:
+        assert feature_name in registry.default_features
+
+    plugins = {
+        feature_name: plugin
+        for editor_name, feature_name, plugin in registry.editor_plugins
     }
+
+    proofread_control = plugins[PROOFREAD_FEATURE]
+    assert "wagtail_heimdallur/js/heimdallur.js" in str(proofread_control.media)
+    assert "wagtail_heimdallur/css/heimdallur.css" in str(proofread_control.media)
+
+    control_options = {}
+    proofread_control.construct_options(control_options)
+    assert control_options["controls"] == [{"type": PROOFREAD_FEATURE}]
+
+    entity_options = {}
+    plugins[PROOFREAD_ENTITY_FEATURE].construct_options(entity_options)
+    assert entity_options["entityTypes"] == [{"type": PROOFREAD_ENTITY_FEATURE}]
+
+    # The highlight entity is stripped on save (keeping its text) via a
+    # contentstate converter rule.
+    converter_features = {
+        feature_name for _, feature_name, _ in registry.converter_rules
+    }
+    assert PROOFREAD_ENTITY_FEATURE in converter_features
+
+
+def test_proofread_entity_converter_rule_strips_highlight_but_keeps_text():
+    """The save-time converter rule must drop the entity, not its text.
+
+    An unregistered entity would make Wagtail delete the highlighted text on
+    save, so the stripping decorator returning its children is load-bearing.
+    """
+    registry = FeatureRegistryRecorder()
+    rich_text_hook = [
+        hook_func
+        for hook_name, hook_func in get_hook_registrations({})
+        if hook_name == "register_rich_text_features"
+    ][0]
+    rich_text_hook(registry)
+
+    rule = [
+        rule
+        for converter_name, feature_name, rule in registry.converter_rules
+        if feature_name == PROOFREAD_ENTITY_FEATURE
+    ][0]
+    decorator = rule["to_database_format"]["entity_decorators"][
+        PROOFREAD_ENTITY_FEATURE
+    ]
+
+    assert decorator({"children": "heimr"}) == "heimr"
+    assert rule["from_database_format"] == {}
 
 
 def test_register_heimdallur_hooks_uses_supplied_register_function():
@@ -157,11 +206,6 @@ def test_register_heimdallur_hooks_uses_supplied_register_function():
     registrations = register_heimdallur_hooks({}, register=register)
 
     assert registered == registrations
-
-
-def test_editor_assets_render_static_tags():
-    assert "wagtail_heimdallur/js/heimdallur.js" in insert_editor_js()
-    assert "wagtail_heimdallur/css/heimdallur.css" in insert_editor_css()
 
 
 @pytest.mark.django_db

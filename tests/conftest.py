@@ -28,7 +28,6 @@ def pytest_configure(config):
             WAGTAIL_HEIMDALLUR={
                 "FEATURES": {
                     "inline_proofreading": True,
-                    "inline_translation": True,
                     "page_translation": True,
                 },
                 "BACKENDS": {

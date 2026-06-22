@@ -1,33 +1,155 @@
-.heimdallur-toolbar-button {
-  border: 1px solid #5b6f86;
-  border-radius: 4px;
-  background: #ffffff;
-  color: #1f2933;
-  cursor: pointer;
-  font: inherit;
-  padding: 0.375rem 0.625rem;
+/* Proofreading toolbar control */
+.heimdallur-proofread-toolbar {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
 }
 
-.heimdallur-toolbar-button:focus-visible,
-.heimdallur-actions button:focus-visible,
-.heimdallur-language-selector select:focus-visible {
+.heimdallur-proofread-status {
+  color: #4a5568;
+  font-size: 0.8125rem;
+}
+
+.heimdallur-proofread-icon {
+  display: block;
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.heimdallur-proofread-button {
+  position: relative;
+  display: inline-flex;
+}
+
+.heimdallur-proofread-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  box-sizing: border-box;
+  border-radius: 1rem;
+  background: #b7791f;
+  color: #ffffff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+.heimdallur-proofread-icon--spin {
+  animation: heimdallur-proofread-spin 0.8s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes heimdallur-proofread-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Inline suggestion highlight + popover (rendered by the Draftail entity) */
+.heimdallur-proofread-suggestion {
+  position: relative;
+}
+
+.heimdallur-proofread-suggestion__text {
+  background: #fff1a8;
+  border-bottom: 2px solid #b7791f;
+  cursor: pointer;
+}
+
+.heimdallur-proofread-suggestion__text:focus-visible {
   outline: 3px solid #2f80ed;
   outline-offset: 2px;
 }
 
-.heimdallur-toolbar-button:disabled {
-  cursor: progress;
-  opacity: 0.65;
+.heimdallur-proofread-popover {
+  background: #ffffff;
+  border: 1px solid #c7d0da;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(31, 41, 51, 0.16);
+  color: #1f2933;
+  display: block;
+  min-width: 175px;
+  max-width: min(28rem, calc(100vw - 24px));
+  padding: 0.75rem;
+  position: fixed;
+  width: max-content;
+  z-index: 1000;
 }
 
-.heimdallur-annotation {
-  background: #fff1a8;
-  border-bottom: 2px solid #b7791f;
+.heimdallur-proofread-popover__diff {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.heimdallur-proofread-popover__original {
+  color: #a0aec0;
+  text-decoration: line-through;
+}
+
+.heimdallur-proofread-popover__arrow {
+  color: #718096;
+}
+
+.heimdallur-proofread-popover__suggestion {
+  color: #1f7a52;
+  font-weight: 700;
+}
+
+.heimdallur-proofread-popover__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.heimdallur-proofread-popover__actions-group {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.heimdallur-proofread-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 1px solid #c7d0da;
+  border-radius: 4px;
+  background: #f7fafc;
+  color: #1f7a52;
   cursor: pointer;
-  padding: 0 0.1em;
 }
 
-.heimdallur-popover,
+.heimdallur-proofread-action:hover {
+  background: #edf2f7;
+}
+
+.heimdallur-proofread-action:focus-visible {
+  outline: 3px solid #2f80ed;
+  outline-offset: 1px;
+}
+
+.heimdallur-proofread-action--dismiss {
+  color: #c53030;
+}
+
+.heimdallur-proofread-action .heimdallur-proofread-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+/* Inline translation preview + language selector (shared admin styling) */
 .heimdallur-translation-preview {
   background: #ffffff;
   border: 1px solid #c7d0da;
@@ -38,91 +160,21 @@
   padding: 0.75rem;
 }
 
-.heimdallur-popover dl {
-  display: grid;
-  gap: 0.25rem 0.75rem;
-  grid-template-columns: max-content 1fr;
+.heimdallur-translation-preview p {
   margin: 0 0 0.75rem;
+  white-space: pre-wrap;
 }
 
-.heimdallur-popover dt {
-  font-weight: 600;
-}
-
-.heimdallur-popover dd {
-  margin: 0;
-}
-
-.heimdallur-actions,
 .heimdallur-language-selector {
   display: flex;
   gap: 0.5rem;
-}
-
-.heimdallur-actions button,
-.heimdallur-language-selector button {
-  border: 1px solid #5b6f86;
-  border-radius: 4px;
-  background: #f7fafc;
-  color: #1f2933;
-  cursor: pointer;
-  font: inherit;
-  padding: 0.35rem 0.6rem;
 }
 
 .heimdallur-language-selector select {
   min-width: 10rem;
 }
 
-.heimdallur-translation-preview p {
-  margin: 0 0 0.75rem;
-  white-space: pre-wrap;
-}
-
-.heimdallur-proofread-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.heimdallur-proofread-status,
-.heimdallur-proofread-meta {
-  color: #4a5568;
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.heimdallur-proofread-suggestions {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.heimdallur-proofread-suggestion {
-  border: 1px solid #c7d0da;
-  border-radius: 6px;
-  display: grid;
-  gap: 0.5rem;
-  max-width: 42rem;
-  padding: 0.75rem;
-}
-
-.heimdallur-proofread-original,
-.heimdallur-proofread-corrected {
-  margin: 0;
-  white-space: pre-wrap;
-}
-
-.heimdallur-proofread-original {
-  color: #4a5568;
-  text-decoration: line-through;
-}
-
-.heimdallur-proofread-corrected {
-  color: #1f2933;
-  font-weight: 600;
-}
-
-.heimdallur-proofread-suggestion button {
-  justify-self: start;
+.heimdallur-language-selector select:focus-visible {
+  outline: 3px solid #2f80ed;
+  outline-offset: 2px;
 }

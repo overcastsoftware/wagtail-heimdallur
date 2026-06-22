@@ -83,7 +83,6 @@ MALSTADUR_API_KEY = os.environ.get("MALSTADUR_API_KEY", "")
 WAGTAIL_HEIMDALLUR = {
     "FEATURES": {
         "inline_proofreading": True,
-        "inline_translation": True,
         "page_translation": True,
     },
     "BACKENDS": {

@@ -5,7 +5,6 @@ from django.conf import settings
 DEFAULTS = {
     "FEATURES": {
         "inline_proofreading": True,
-        "inline_translation": True,
         "page_translation": True,
     },
     "BACKENDS": {},

@@ -8,7 +8,6 @@ from django.contrib import messages
 from django.urls import include, path, reverse
 from django.urls.exceptions import NoReverseMatch
 from django.utils.translation import gettext_lazy as _
-from django.templatetags.static import static
 from django.utils.html import format_html
 from wagtail import hooks as wagtail_hooks
 from wagtail.admin.menu import AdminOnlyMenuItem
@@ -18,7 +17,8 @@ from wagtail_heimdallur.engines.page_translation import connect_page_translation
 from wagtail_heimdallur.models import TranslationJob
 
 PROOFREAD_FEATURE = "heimdallur-proofread"
-TRANSLATE_FEATURE = "heimdallur-translate"
+PROOFREAD_CLEAR_FEATURE = "heimdallur-proofread-clear"
+PROOFREAD_ENTITY_FEATURE = "HEIMDALLUR_PROOFREAD"
 EDITOR_JS_PATH = "wagtail_heimdallur/js/heimdallur.js"
 EDITOR_CSS_PATH = "wagtail_heimdallur/css/heimdallur.css"
 
@@ -45,16 +45,14 @@ def get_hook_registrations(settings: dict) -> list[tuple[str, Callable]]:
     features = _feature_settings(settings)
     registrations = []
 
-    if _inline_editor_enabled(features):
-        registrations.extend(
-            [
-                (
-                    "register_rich_text_features",
-                    _build_register_rich_text_features_hook(features),
-                ),
-                ("insert_editor_js", insert_editor_js),
-                ("insert_editor_css", insert_editor_css),
-            ]
+    if features["inline_proofreading"]:
+        # The Draftail feature media loads the editor JS/CSS where it is used,
+        # so no global asset hooks are needed.
+        registrations.append(
+            (
+                "register_rich_text_features",
+                _build_register_rich_text_features_hook(),
+            )
         )
 
     if features["page_translation"]:
@@ -70,22 +68,6 @@ def get_hook_registrations(settings: dict) -> list[tuple[str, Callable]]:
         )
 
     return registrations
-
-
-def insert_editor_js() -> str:
-    """Load the compiled Heimdallur editor bundle in Wagtail admin."""
-    return format_html(
-        '<script src="{}"></script>',
-        static(EDITOR_JS_PATH),
-    )
-
-
-def insert_editor_css() -> str:
-    """Load Heimdallur editor styles in Wagtail admin."""
-    return format_html(
-        '<link rel="stylesheet" href="{}">',
-        static(EDITOR_CSS_PATH),
-    )
 
 
 def register_translation_queue_admin_urls():
@@ -196,39 +178,76 @@ def _source_translation_message(job: TranslationJob):
     )
 
 
-def _build_register_rich_text_features_hook(features: dict) -> Callable:
+def _build_register_rich_text_features_hook() -> Callable:
     def register_rich_text_features(feature_registry) -> None:
-        if features["inline_proofreading"]:
-            _register_draftail_control(
-                feature_registry,
-                PROOFREAD_FEATURE,
-                "Proofread",
-            )
-
-        if features["inline_translation"]:
-            _register_draftail_control(
-                feature_registry,
-                TRANSLATE_FEATURE,
-                "Translate",
-            )
+        _register_draftail_proofread_feature(feature_registry)
 
     return register_rich_text_features
 
 
-def _register_draftail_control(feature_registry, feature_name: str, label: str) -> None:
-    from wagtail.admin.rich_text.editors.draftail.features import ControlFeature
+def _register_draftail_proofread_feature(feature_registry) -> None:
+    """Register proofreading as a Draftail plugin (toolbar controls + entity).
+
+    The ``HEIMDALLUR_PROOFREAD`` entity highlights are ephemeral review aids:
+    a contentstate converter rule strips the entity on save while preserving
+    its text. (Leaving the entity unregistered would make Wagtail delete the
+    highlighted text entirely, so the stripping rule is required.)
+    """
+    from wagtail.admin.rich_text.editors.draftail.features import (
+        ControlFeature,
+        EntityFeature,
+    )
+
+    media = {
+        "js": [EDITOR_JS_PATH],
+        "css": {"all": [EDITOR_CSS_PATH]},
+    }
 
     feature_registry.register_editor_plugin(
         "draftail",
-        feature_name,
-        ControlFeature(
-            {
-                "type": feature_name,
-                "label": label,
-                "description": label,
-            }
-        ),
+        PROOFREAD_FEATURE,
+        ControlFeature({"type": PROOFREAD_FEATURE}, **media),
     )
+    feature_registry.register_editor_plugin(
+        "draftail",
+        PROOFREAD_CLEAR_FEATURE,
+        ControlFeature({"type": PROOFREAD_CLEAR_FEATURE}, **media),
+    )
+    feature_registry.register_editor_plugin(
+        "draftail",
+        PROOFREAD_ENTITY_FEATURE,
+        EntityFeature({"type": PROOFREAD_ENTITY_FEATURE}, **media),
+    )
+    feature_registry.register_converter_rule(
+        "contentstate",
+        PROOFREAD_ENTITY_FEATURE,
+        {
+            "from_database_format": {},
+            "to_database_format": {
+                "entity_decorators": {
+                    PROOFREAD_ENTITY_FEATURE: _strip_proofread_entity,
+                },
+            },
+        },
+    )
+
+    for feature_name in (
+        PROOFREAD_FEATURE,
+        PROOFREAD_CLEAR_FEATURE,
+        PROOFREAD_ENTITY_FEATURE,
+    ):
+        _add_default_feature(feature_registry, feature_name)
+
+
+def _strip_proofread_entity(props):
+    """Drop a proofreading highlight entity on save, keeping its text."""
+    return props["children"]
+
+
+def _add_default_feature(feature_registry, feature_name: str) -> None:
+    default_features = getattr(feature_registry, "default_features", None)
+    if default_features is not None and feature_name not in default_features:
+        default_features.append(feature_name)
 
 
 def _feature_settings(settings: dict) -> dict:
@@ -236,7 +255,3 @@ def _feature_settings(settings: dict) -> dict:
         **DEFAULTS["FEATURES"],
         **settings.get("FEATURES", {}),
     }
-
-
-def _inline_editor_enabled(features: dict) -> bool:
-    return features["inline_proofreading"] or features["inline_translation"]

@@ -12,7 +12,7 @@ from wagtail_heimdallur.exceptions import (
     BackendTimeoutError,
 )
 from wagtail_heimdallur.models import DiffAnnotation, ProofreadingResult
-from wagtail_heimdallur.views import ProofreadView, TranslateView
+from wagtail_heimdallur.views import ProofreadView
 
 
 @pytest.fixture
@@ -38,11 +38,6 @@ class SuccessfulProofreadingEngine:
                 )
             ],
         )
-
-
-class SuccessfulTranslationEngine:
-    def translate(self, text, source_language, target_language):
-        return f"{text} ({source_language}->{target_language})"
 
 
 def post_json(client, path, data):
@@ -78,23 +73,6 @@ def test_successful_proofreading_request_response_cycle(api_client, monkeypatch)
             }
         ],
     }
-
-
-def test_successful_translation_request_response_cycle(api_client, monkeypatch):
-    monkeypatch.setattr(TranslateView, "engine_class", SuccessfulTranslationEngine)
-
-    response = post_json(
-        api_client,
-        "/api/heimdallur/translate/",
-        {
-            "text": "halló",
-            "source_language": "is",
-            "target_language": "en",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"translated_text": "halló (is->en)"}
 
 
 @pytest.mark.parametrize(

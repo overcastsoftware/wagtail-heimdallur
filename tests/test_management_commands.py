@@ -26,7 +26,6 @@ backend_ids = st.text(
     source_language=language_codes,
     target_language=language_codes,
     inline_proofreading=st.booleans(),
-    inline_translation=st.booleans(),
     page_translation=st.booleans(),
 )
 @settings(max_examples=50)
@@ -36,7 +35,6 @@ def test_heimdallur_check_output_completeness(
     source_language,
     target_language,
     inline_proofreading,
-    inline_translation,
     page_translation,
 ):
     """Property 19: command output contains features, backends, and routes."""
@@ -44,7 +42,6 @@ def test_heimdallur_check_output_completeness(
     config = {
         "FEATURES": {
             "inline_proofreading": inline_proofreading,
-            "inline_translation": inline_translation,
             "page_translation": page_translation,
         },
         "BACKENDS": {

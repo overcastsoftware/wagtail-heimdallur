@@ -1,6 +1,26 @@
 # Wagtail-Heimdallur
 
-Wagtail-Heimdallur adds proofreading and translation workflows to the Wagtail admin. It provides pluggable backend classes, a default Miðeind Málstaður backend, JSON API endpoints, Draftail editor controls, page-level translation hooks, and a configuration check command.
+Wagtail-Heimdallur adds proofreading and translation workflows to the Wagtail
+admin. It ships with:
+
+- **Inline proofreading** — a control in the Draftail rich text editor that
+  checks a page's text and shows accept/dismiss suggestions inline.
+- **Page-level translation** — when an editor copies a page to another locale,
+  the page's text is queued and translated in the background.
+- **Pluggable backends** — a default Miðeind [Málstaður](https://malstadur.is)
+  backend, plus a small interface for adding your own services. Different
+  languages and language pairs can be routed to different backends.
+
+The plugin is configured entirely through a single `WAGTAIL_HEIMDALLUR` setting.
+
+## Requirements
+
+- Python 3.11+
+- Django 4.2+
+- Wagtail 6.0+
+
+The inline proofreading control integrates with Wagtail's Draftail editor and is
+developed and verified against Wagtail 7.x.
 
 ## Installation
 
@@ -17,20 +37,37 @@ INSTALLED_APPS = [
 ]
 ```
 
-Configure at least one backend:
+Mount the API URLs (used by the proofreading control) in your project URLconf:
 
 ```python
+from django.urls import include, path
+
+urlpatterns = [
+    # ...
+    path("", include("wagtail_heimdallur.urls")),
+]
+```
+
+Then add a `WAGTAIL_HEIMDALLUR` setting with at least one backend (see below).
+
+## Configuration
+
+A minimal configuration using the Miðeind backend for Icelandic:
+
+```python
+import os
+
 WAGTAIL_HEIMDALLUR = {
     "FEATURES": {
         "inline_proofreading": True,
-        "inline_translation": True,
         "page_translation": True,
     },
     "BACKENDS": {
         "mideind": {
             "CLASS": "wagtail_heimdallur.backends.mideind.MideindBackend",
             "OPTIONS": {
-                "api_key": os.environ.get("MALSTADUR_API_KEY", ""),
+                "api_key": os.environ["MALSTADUR_API_KEY"],
+                "supported_languages": ["is"],
                 "supported_language_pairs": [("is", "en"), ("en", "is")],
             },
             "enabled": True,
@@ -38,114 +75,263 @@ WAGTAIL_HEIMDALLUR = {
     },
     "LANGUAGE_ROUTING": {
         "proofreading": {"is": "mideind"},
-        "translation": {("is", "en"): "mideind", ("en", "is"): "mideind"},
+        "translation": {
+            ("is", "en"): "mideind",
+            ("en", "is"): "mideind",
+        },
     },
 }
 ```
 
-Missing feature toggles default to enabled. Per-backend `enabled: False` removes a backend from routing without deleting its configuration.
+The configuration is validated at startup; an invalid setting (no backends, an
+unimportable backend class, an unknown feature name, or a routing entry pointing
+at an undefined backend) raises `ImproperlyConfigured`.
 
-## API
+### `FEATURES`
 
-The package exposes:
+A dictionary of feature toggles. **Each defaults to `True`** if omitted.
 
-- `POST /api/heimdallur/proofread/` with `{"text": "...", "language": "is"}`
-- `POST /api/heimdallur/translate/` with `{"text": "...", "source_language": "is", "target_language": "en"}`
-- `GET /api/heimdallur/languages/`
+| Key                  | Default | Effect when `True`                                                                 |
+| -------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `inline_proofreading`| `True`  | Registers the Draftail proofreading control and its API.                            |
+| `page_translation`   | `True`  | Queues a translation job when a page is copied to a new locale, and adds the report.|
 
-Include the URLs from your project URLconf if you want the endpoints mounted:
+Setting a toggle to `False` skips registering the hooks, views, and UI for that
+feature.
+
+### `BACKENDS`
+
+A dictionary of named backend definitions. Each entry has:
+
+| Key       | Required | Description                                                                 |
+| --------- | -------- | --------------------------------------------------------------------------- |
+| `CLASS`   | yes      | Dotted import path to a backend class.                                       |
+| `OPTIONS` | no       | Keyword arguments passed to the backend's `__init__`.                        |
+| `enabled` | no       | Defaults to `True`. `False` keeps the definition but removes it from routing.|
+
+You may register as many backends as you like — for example one service for
+Icelandic and another for a different language.
+
+#### Miðeind backend options
+
+`wagtail_heimdallur.backends.mideind.MideindBackend` accepts:
+
+| Option                     | Default                     | Description                                                              |
+| -------------------------- | --------------------------- | ------------------------------------------------------------------------ |
+| `api_key`                  | `""`                        | Málstaður API key, sent as the `X-API-KEY` header.                       |
+| `base_url`                 | `https://api.malstadur.is`  | API base URL.                                                            |
+| `timeout`                  | `30`                        | Per-request timeout in seconds.                                          |
+| `supported_languages`      | `["is"]`                    | Languages this backend proofreads.                                       |
+| `supported_language_pairs` | queried from the API        | `(source, target)` pairs this backend translates.                       |
+
+### `LANGUAGE_ROUTING`
+
+Maps languages and language pairs to a backend identifier:
 
 ```python
-from django.urls import include, path
-
-urlpatterns = [
-    path("", include("wagtail_heimdallur.urls")),
-]
+"LANGUAGE_ROUTING": {
+    "proofreading": {"is": "mideind"},                  # {language: backend}
+    "translation":  {("is", "en"): "mideind"},          # {(source, target): backend}
+},
 ```
 
-## Management Command
+If a language or pair is **not** listed, the first configured backend that
+supports it is used as a fallback — so with a single backend you don't need a
+routing table at all; it becomes the default for everything it can handle.
 
-Validate configuration and inspect enabled features, backends, and routing:
+## Multiple services and language routing
 
-```bash
-python manage.py heimdallur_check
+You can register several backends and route work to them per language
+(proofreading) or per language pair (translation). Each backend declares what it
+supports:
+
+- proofreading backends implement `get_supported_languages()`
+- translation backends implement `get_supported_language_pairs()`
+
+Because backends declare their languages, the inline proofreading control only
+appears in the editor for pages whose **content language** a backend actually
+supports. Miðeind's Málstaður only proofreads Icelandic, for example, so the
+Proofread button is hidden when editing an English page.
+
+Example of routing two languages to two services:
+
+```python
+WAGTAIL_HEIMDALLUR = {
+    "BACKENDS": {
+        "mideind": {
+            "CLASS": "wagtail_heimdallur.backends.mideind.MideindBackend",
+            "OPTIONS": {"api_key": MIDEIND_KEY, "supported_languages": ["is"]},
+        },
+        "acme": {
+            "CLASS": "myproject.backends.AcmeProofreader",
+            "OPTIONS": {"api_key": ACME_KEY},
+        },
+    },
+    "LANGUAGE_ROUTING": {
+        "proofreading": {
+            "is": "mideind",
+            "en": "acme",
+        },
+    },
+}
 ```
 
-Page-level translations are queued when Wagtail copies a page for translation.
-Run the queue command to submit queued page text to Málstaður's asynchronous
-`/v1/translate/text` endpoint, and run it again later to poll running tasks and
-apply completed translations:
+## Custom backends
+
+Implement one or both of the abstract base classes in
+`wagtail_heimdallur.backends.base`. A single class may implement both.
+
+```python
+from wagtail_heimdallur.backends.base import BaseProofreadingBackend
+from wagtail_heimdallur.models import DiffAnnotation, ProofreadingResult
+
+
+class AcmeProofreader(BaseProofreadingBackend):
+    def __init__(self, api_key="", **kwargs):
+        self.api_key = api_key
+
+    def get_supported_languages(self):
+        return ["en"]
+
+    def proofread(self, text, language):
+        # ... call your service ...
+        return ProofreadingResult(
+            original_text=text,
+            corrected_text=corrected,
+            annotations=[
+                DiffAnnotation(
+                    orig_start_idx=0, orig_end_idx=3, orig_string="teh",
+                    changed_start_idx=0, changed_end_idx=3, changed_string="the",
+                    change_type="spelling",
+                ),
+            ],
+        )
+```
+
+For translation, implement `BaseTranslationBackend` with `translate(text,
+source_language, target_language)` and `get_supported_language_pairs()`. Backends
+should raise the typed exceptions from `wagtail_heimdallur.exceptions`
+(`AuthenticationError`, `BackendTimeoutError`, `BackendRequestError`,
+`UnsupportedLanguageError`, ...) so the admin can report failures cleanly.
+
+> **Note:** page translation currently drives Miðeind's asynchronous
+> text-translation endpoints. A custom translation backend used for page
+> translation should also implement `start_text_translation()` and
+> `get_text_translation_status()` as the Miðeind backend does.
+
+## Inline proofreading
+
+With `inline_proofreading` enabled, a **Proofread** button appears in the
+Draftail toolbar of rich text fields (only for content languages a backend
+supports). Clicking it:
+
+1. Sends each block's text to the configured proofreading backend.
+2. Highlights suggestions inline. A badge shows how many were found.
+3. Clicking a highlight opens a popover with the original → suggestion and
+   buttons to **accept all**, **accept**, or **dismiss** the suggestion.
+4. Once suggestions exist, the toolbar button becomes **Apply all**, and a
+   **Dismiss all** button appears.
+
+Highlights are ephemeral review aids — they are stripped when the page is saved,
+leaving only the corrected text.
+
+## Page translation
+
+With `page_translation` enabled, copying a page to another locale (Wagtail's
+"Translate page" action, via `wagtail.contrib.simple_translation`) queues a
+translation job for the page's translatable text — plain text, rich text, and
+text inside StreamField blocks.
+
+Jobs are processed by a management command (run it on a schedule or a worker):
 
 ```bash
 python manage.py process_heimdallur_translation_queue
 ```
 
-Use `--limit` to cap how many queued or running jobs a worker processes in one
-run. Queue state, task progress, failures, and skipped fields are visible in the
-Wagtail admin under **Reports > Translation queue**. When a page is being
-translated, the source and target edit screens show a warning with a link to the
-queue.
+The command submits queued text to the backend's asynchronous translation
+endpoint, then on later runs polls running tasks and applies completed
+translations to the draft page. Use `--limit` to cap how many jobs a single run
+processes.
 
-Retry failed or warning jobs after fixing credentials or backend configuration:
+Queue state, progress, failures, and skipped fields are visible in the Wagtail
+admin under **Reports → Translation queue**. When a page has translation work in
+progress, its edit screen shows a warning linking to the queue.
+
+Retry jobs after fixing credentials or configuration:
 
 ```bash
 python manage.py process_heimdallur_translation_queue --retry-failed
 python manage.py process_heimdallur_translation_queue --retry-warnings
 ```
 
-If a remote task is stuck, requeue only stale running jobs with an explicit age
-guard:
+Requeue stale running jobs (an explicit age guard is required):
 
 ```bash
 python manage.py process_heimdallur_translation_queue --retry-running --older-than-minutes 60
 ```
 
-## Frontend Assets
+## Management commands
 
-TypeScript sources live in `wagtail_heimdallur/client`. To rebuild the static editor bundle:
+Validate configuration and inspect enabled features, registered backends, and
+the resolved routing:
 
 ```bash
-cd wagtail_heimdallur/client
-npm install
-npm run build
-npm test
+python manage.py heimdallur_check
 ```
 
-The compiled assets are served from `wagtail_heimdallur/static/wagtail_heimdallur/`.
+Process the page-translation queue (see above):
 
-## Demo Site
+```bash
+python manage.py process_heimdallur_translation_queue
+```
 
-Run the included demo site from the repository root:
+## API endpoints
+
+Mounted by `wagtail_heimdallur.urls`:
+
+| Method & path                      | Body / response                                                              |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| `POST /api/heimdallur/proofread/`  | `{"text": "...", "language": "is"}` → serialized `ProofreadingResult`.       |
+| `GET /api/heimdallur/languages/`   | `{"proofreading": {"languages": [...]}, "translation": {"language_pairs": [...]}}` |
+
+`POST` requests require Django's CSRF token; the editor control sends it
+automatically. Backend errors are returned as
+`{"error": {"type": ..., "message": ...}}` with HTTP 400.
+
+## Demo site
+
+Run the included demo from the repository root:
 
 ```bash
 docker compose up demo
 ```
 
-Then open `http://localhost:8000/admin/`. Supply a Málstaður API key with:
+Open `http://localhost:8000/admin/` and sign in as `admin` / `admin`. Supply a
+Málstaður API key to exercise the live backend:
 
 ```bash
 MALSTADUR_API_KEY=your-key docker compose up demo
 ```
 
-If `MALSTADUR_API_KEY` is not provided, the demo still starts. The demo settings keep the backend configured with an empty key so local pages, admin wiring, and configuration checks can be inspected before credentials are available.
-
-The demo setup command creates:
-
-- Icelandic and English Wagtail locales
-- a default Wagtail site rooted at an Icelandic sample page
-- a demo superuser, `admin` / `admin`, if it does not already exist
-
-You can also create your own admin user in another shell:
-
-```bash
-docker compose run demo python demo/manage.py createsuperuser
-```
-
-Sample Icelandic content is defined in `demo/home/fixtures/sample_pages.json` for projects that want to load starter content.
+Without a key the demo still starts (the backend is configured with an empty
+key) so the admin wiring, pages, and `heimdallur_check` can be inspected. The
+demo creates Icelandic and English locales, a default site rooted at an
+Icelandic sample page, and the `admin` superuser. Sample content lives in
+`demo/home/fixtures/sample_pages.json`.
 
 ## Development
 
-Run tests in Docker:
+TypeScript sources for the editor control live in `wagtail_heimdallur/client`.
+Rebuild the static bundle after changing them:
+
+```bash
+cd wagtail_heimdallur/client
+npm install
+npm run build       # outputs to wagtail_heimdallur/static/wagtail_heimdallur/js/
+npm test
+```
+
+Run the Python test suite (in Docker):
 
 ```bash
 docker compose run tests
@@ -153,7 +339,7 @@ docker compose run tests pytest tests/test_backends/test_mideind.py
 docker compose run tests tox
 ```
 
-Run tests locally:
+Or locally:
 
 ```bash
 pip install -e ".[dev]"

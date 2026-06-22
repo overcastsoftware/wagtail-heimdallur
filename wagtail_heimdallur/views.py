@@ -7,7 +7,7 @@ from django.views import View
 
 from wagtail_heimdallur.backends import BackendRegistry
 from wagtail_heimdallur.conf import get_settings
-from wagtail_heimdallur.engines import ProofreadingEngine, TranslationEngine
+from wagtail_heimdallur.engines import ProofreadingEngine
 from wagtail_heimdallur.exceptions import BackendError
 from wagtail_heimdallur.models import ProofreadingResult
 
@@ -51,21 +51,6 @@ class ProofreadView(BackendErrorJsonMixin, View):
             data.get("language", ""),
         )
         return JsonResponse(_proofreading_result_to_dict(result))
-
-
-class TranslateView(BackendErrorJsonMixin, View):
-    """POST endpoint for inline translation."""
-
-    engine_class = TranslationEngine
-
-    def post(self, request, *args, **kwargs):
-        data = self._json_body()
-        translated_text = self.engine_class().translate(
-            data.get("text", ""),
-            data.get("source_language", ""),
-            data.get("target_language", ""),
-        )
-        return JsonResponse({"translated_text": translated_text})
 
 
 class SupportedLanguagesView(BackendErrorJsonMixin, View):

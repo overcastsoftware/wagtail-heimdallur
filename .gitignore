@@ -9,3 +9,6 @@ build/
 demo/db.sqlite3
 demo/media/
 demo/static/
+.env
+.claude/
+.hypothesis/

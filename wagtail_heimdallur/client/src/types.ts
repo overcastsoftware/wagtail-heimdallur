@@ -13,8 +13,3 @@ export interface ProofreadingResult {
   corrected_text: string;
   annotations: DiffAnnotation[];
 }
-
-export interface TranslationPair {
-  source_language: string;
-  target_language: string;
-}

@@ -1,4 +1,4 @@
-import type { ProofreadingResult, TranslationPair } from "./types";
+import type { ProofreadingResult } from "./types";
 
 async function postJson<T>(url: string, payload: object): Promise<T> {
   const headers: Record<string, string> = {
@@ -29,26 +29,13 @@ export function proofreadText(text: string, language: string): Promise<Proofread
   });
 }
 
-export async function translateText(
-  text: string,
-  sourceLanguage: string,
-  targetLanguage: string
-): Promise<string> {
-  const data = await postJson<{ translated_text: string }>("/api/heimdallur/translate/", {
-    text,
-    source_language: sourceLanguage,
-    target_language: targetLanguage
-  });
-  return data.translated_text;
-}
-
-export async function fetchLanguagePairs(): Promise<TranslationPair[]> {
+export async function fetchProofreadingLanguages(): Promise<string[]> {
   const response = await fetch("/api/heimdallur/languages/");
   const data = await response.json();
   if (!response.ok) {
     throw new Error(data?.error?.message || "Could not load supported languages");
   }
-  return data.translation.language_pairs as TranslationPair[];
+  return (data?.proofreading?.languages ?? []) as string[];
 }
 
 function getCookie(name: string): string {

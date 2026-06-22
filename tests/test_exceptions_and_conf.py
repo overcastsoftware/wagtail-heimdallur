@@ -102,7 +102,6 @@ class TestGetSettingsDefaults:
         result = get_settings()
 
         assert result["FEATURES"]["inline_proofreading"] is True
-        assert result["FEATURES"]["inline_translation"] is True
         assert result["FEATURES"]["page_translation"] is True
 
     def test_defaults_when_features_key_missing(self, settings):
@@ -116,7 +115,6 @@ class TestGetSettingsDefaults:
         result = get_settings()
 
         assert result["FEATURES"]["inline_proofreading"] is True
-        assert result["FEATURES"]["inline_translation"] is True
         assert result["FEATURES"]["page_translation"] is True
 
     def test_missing_toggle_defaults_to_true(self, settings):
@@ -124,7 +122,7 @@ class TestGetSettingsDefaults:
         settings.WAGTAIL_HEIMDALLUR = {
             "FEATURES": {
                 "inline_proofreading": False,
-                # inline_translation and page_translation are NOT set
+                # page_translation is NOT set
             },
         }
 
@@ -135,7 +133,6 @@ class TestGetSettingsDefaults:
         # Explicitly set feature is respected
         assert result["FEATURES"]["inline_proofreading"] is False
         # Missing features default to True
-        assert result["FEATURES"]["inline_translation"] is True
         assert result["FEATURES"]["page_translation"] is True
 
     def test_all_features_explicitly_disabled(self, settings):
@@ -143,7 +140,6 @@ class TestGetSettingsDefaults:
         settings.WAGTAIL_HEIMDALLUR = {
             "FEATURES": {
                 "inline_proofreading": False,
-                "inline_translation": False,
                 "page_translation": False,
             },
         }
@@ -153,7 +149,6 @@ class TestGetSettingsDefaults:
         result = get_settings()
 
         assert result["FEATURES"]["inline_proofreading"] is False
-        assert result["FEATURES"]["inline_translation"] is False
         assert result["FEATURES"]["page_translation"] is False
 
     def test_backends_preserved_from_user_settings(self, settings):
