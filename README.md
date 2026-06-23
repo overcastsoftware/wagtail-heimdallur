@@ -123,6 +123,8 @@ Icelandic and another for a different language.
 | `timeout`                  | `30`                        | Per-request timeout in seconds.                                          |
 | `supported_languages`      | `["is"]`                    | Languages this backend proofreads.                                       |
 | `supported_language_pairs` | queried from the API        | `(source, target)` pairs this backend translates.                       |
+| `request_delay`            | `0.0`                       | Seconds to wait before each request. Throttles page translation to stay under the rate limit. |
+| `rate_limit_retries`       | `2`                         | Retries on HTTP 429 (honouring `Retry-After`) before raising `RateLimitError`. |
 
 ### `LANGUAGE_ROUTING`
 
@@ -252,6 +254,12 @@ The command submits queued text to the backend's asynchronous translation
 endpoint, then on later runs polls running tasks and applies completed
 translations to the draft page. Use `--limit` to cap how many jobs a single run
 processes.
+
+A page is submitted as one request per text segment, so a content-heavy page can
+make many requests in quick succession. If the backend rate-limits you (HTTP 429,
+raised as `RateLimitError`), set the Miðeind `request_delay` option to throttle
+the requests, then re-run the queue with `--retry-failed` once the limit window
+has passed.
 
 Queue state, progress, failures, and skipped fields are visible in the Wagtail
 admin under **Reports → Translation queue**. When a page has translation work in

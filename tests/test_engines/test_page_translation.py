@@ -164,6 +164,87 @@ def test_page_translation_collects_texts_in_field_order():
     assert texts == ["Titill", "Meginmál", "Straumur"]
 
 
+@dataclass
+class StreamPage:
+    stream: object
+    locale: Locale
+    saved_revision: bool = False
+
+    def get_translatable_field_names(self):
+        return ["stream"]
+
+    def save_revision(self):
+        self.saved_revision = True
+
+
+def _real_stream_page(language_code):
+    """A page whose only field is a real Wagtail StreamField value mixing text
+    blocks, a nested StructBlock, a ListBlock and a non-text block."""
+    from wagtail import blocks
+
+    class _Stream(blocks.StreamBlock):
+        heading = blocks.CharBlock()
+        body = blocks.RichTextBlock()
+        section = blocks.StructBlock(
+            [("title", blocks.CharBlock()), ("intro", blocks.RichTextBlock())]
+        )
+        bullets = blocks.ListBlock(blocks.CharBlock())
+        number = blocks.IntegerBlock()
+
+    raw = [
+        {"type": "heading", "value": "Fyrirsogn", "id": "a"},
+        {"type": "body", "value": "<p>Texti</p>", "id": "b"},
+        {
+            "type": "section",
+            "value": {"title": "Titill", "intro": "<p>Inn</p>"},
+            "id": "c",
+        },
+        {
+            "type": "bullets",
+            "value": [
+                {"type": "item", "value": "Eitt", "id": "d1"},
+                {"type": "item", "value": "Tvo", "id": "d2"},
+            ],
+            "id": "d",
+        },
+        {"type": "number", "value": 7, "id": "e"},
+    ]
+    return StreamPage(stream=_Stream().to_python(raw), locale=Locale(language_code))
+
+
+def test_real_streamfield_collects_only_text_blocks():
+    """Block-aware traversal collects text blocks (incl. nested) and skips the
+    rest — block UUIDs and non-text blocks are not translated."""
+    texts = PageTranslationEngine().collect_texts(_real_stream_page("is"))
+
+    assert len(texts) == 6
+    assert texts[0] == "Fyrirsogn"  # CharBlock
+    assert texts[2] == "Titill"  # nested StructBlock CharBlock
+    assert texts[4:6] == ["Eitt", "Tvo"]  # ListBlock items
+    assert "Texti" in texts[1] and "Inn" in texts[3]  # RichTextBlocks
+    assert "7" not in "".join(texts)  # IntegerBlock skipped
+
+
+def test_real_streamfield_apply_preserves_structure_and_non_text():
+    engine = PageTranslationEngine()
+    texts = engine.collect_texts(_real_stream_page("is"))
+    translated = [f"{text}-EN" for text in texts]
+    target = _real_stream_page("en")
+
+    result = engine.apply_translated_texts(
+        _real_stream_page("is"), target, translated
+    )
+
+    out = list(target.stream)
+    assert out[0].value == "Fyrirsogn-EN"
+    assert out[1].value.source == "<p>Texti</p>-EN"
+    assert out[2].value["title"] == "Titill-EN"
+    assert out[2].value["intro"].source == "<p>Inn</p>-EN"
+    assert list(out[3].value) == ["Eitt-EN", "Tvo-EN"]
+    assert out[4].value == 7  # IntegerBlock unchanged
+    assert "stream" in result.translated_fields
+
+
 def test_page_translation_applies_translated_texts_in_field_order():
     source = Page(
         title="Titill",

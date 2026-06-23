@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from wagtail_heimdallur.exceptions import (
     BackendError,
     BackendRequestError,
     BackendTimeoutError,
+    RateLimitError,
     UnsupportedLanguageError,
     UnsupportedLanguagePairError,
 )
@@ -40,11 +42,22 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
         timeout: float = DEFAULT_TIMEOUT,
         supported_languages: list[str] | None = None,
         supported_language_pairs: list[tuple[str, str]] | None = None,
+        request_delay: float = 0.0,
+        rate_limit_retries: int = 2,
+        max_retry_delay: float = 30.0,
         **kwargs,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Seconds to wait before each request — set this to throttle page
+        # translation, which submits one request per text segment and can
+        # otherwise trip Málstaður's per-IP rate limit.
+        self.request_delay = request_delay
+        # On HTTP 429, retry this many times (honouring Retry-After) before
+        # raising RateLimitError.
+        self.rate_limit_retries = rate_limit_retries
+        self.max_retry_delay = max_retry_delay
         self.supported_languages = list(
             supported_languages or self.DEFAULT_PROOFREADING_LANGUAGES
         )
@@ -138,53 +151,66 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
         return self.supported_language_pairs
 
     def _get(self, path: str) -> httpx.Response:
-        url = f"{self.base_url}{path}"
-        headers = {}
-        if self.api_key:
-            headers["X-API-KEY"] = self.api_key
-
-        try:
-            logger.debug("GET %s", url)
-            response = httpx.get(
-                url,
-                headers=headers,
-                timeout=self.timeout,
-            )
-        except httpx.TimeoutException as exc:
-            raise BackendTimeoutError(
-                f"Miðeind request to {url} timed out."
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise BackendError(f"Miðeind request to {url} failed.") from exc
-
-        logger.debug("GET %s returned HTTP %s", url, response.status_code)
-        self._raise_for_response(response)
-        return response
+        return self._request("GET", path)
 
     def _post(self, path: str, json: dict[str, Any]) -> httpx.Response:
+        return self._request("POST", path, json=json)
+
+    def _request(
+        self, method: str, path: str, json: dict[str, Any] | None = None
+    ) -> httpx.Response:
         url = f"{self.base_url}{path}"
         headers = {}
         if self.api_key:
             headers["X-API-KEY"] = self.api_key
 
-        try:
-            logger.debug("POST %s", url)
-            response = httpx.post(
-                url,
-                json=json,
-                headers=headers,
-                timeout=self.timeout,
-            )
-        except httpx.TimeoutException as exc:
-            raise BackendTimeoutError(
-                f"Miðeind request to {url} timed out."
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise BackendError(f"Miðeind request to {url} failed.") from exc
+        attempt = 0
+        while True:
+            if self.request_delay:
+                time.sleep(self.request_delay)
 
-        logger.debug("POST %s returned HTTP %s", url, response.status_code)
-        self._raise_for_response(response)
-        return response
+            try:
+                logger.debug("%s %s", method, url)
+                response = httpx.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json,
+                    timeout=self.timeout,
+                )
+            except httpx.TimeoutException as exc:
+                raise BackendTimeoutError(
+                    f"Miðeind request to {url} timed out."
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise BackendError(f"Miðeind request to {url} failed.") from exc
+
+            logger.debug("%s %s returned HTTP %s", method, url, response.status_code)
+
+            if response.status_code == 429 and attempt < self.rate_limit_retries:
+                attempt += 1
+                delay = self._retry_after_seconds(response, attempt)
+                logger.warning(
+                    "Miðeind rate-limited (429); retrying in %.1fs "
+                    "(attempt %d/%d).",
+                    delay,
+                    attempt,
+                    self.rate_limit_retries,
+                )
+                time.sleep(delay)
+                continue
+
+            self._raise_for_response(response)
+            return response
+
+    def _retry_after_seconds(self, response: httpx.Response, attempt: int) -> float:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return min(float(retry_after), self.max_retry_delay)
+            except ValueError:
+                pass
+        return min(2.0 ** (attempt - 1), self.max_retry_delay)
 
     def _raise_for_response(self, response: httpx.Response) -> None:
         status_code = response.status_code
@@ -198,6 +224,12 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
                 raise AuthenticationError(f"Miðeind authentication failed: {detail}")
             raise AuthenticationError(
                 "Miðeind API credentials are invalid, missing, or exhausted."
+            )
+        if status_code == 429:
+            raise RateLimitError(
+                "Miðeind rate-limited the request (HTTP 429). Slow down "
+                "(set the backend 'request_delay' option) and retry the job "
+                "later."
             )
         if status_code == 504:
             raise BackendTimeoutError("Miðeind request timed out.")

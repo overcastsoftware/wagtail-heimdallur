@@ -8,10 +8,21 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
-from wagtail_heimdallur.engines.page_translation import PageTranslationEngine
+from wagtail_heimdallur.engines.page_translation import (
+    PageTranslationEngine,
+    SkippedField,
+)
 from wagtail_heimdallur.models import TranslationJob
 
 logger = logging.getLogger(__name__)
+
+
+def _segment_label(text: str, index: int) -> str:
+    """A readable label for a text segment that could not be translated."""
+    text = (text or "").strip()
+    if not text:
+        return f"segment {index + 1}"
+    return text[:60] + ("…" if len(text) > 60 else "")
 
 
 class TranslationQueueProcessor:
@@ -73,7 +84,10 @@ class TranslationQueueProcessor:
                 job.mark_remote_tasks_submitted(remote_tasks)
                 return job
 
-            translated_texts = []
+            # Poll every task before deciding anything. A task that fails on its
+            # own (e.g. Miðeind's SameLanguageError when a segment is already in
+            # the target language) does not fail the whole page — that segment is
+            # skipped and its original text kept.
             updated_remote_tasks = []
             all_completed = True
             for remote_task in job.remote_tasks:
@@ -82,64 +96,70 @@ class TranslationQueueProcessor:
                     source_language=job.source_language,
                     target_language=job.target_language,
                 )
-                updated_remote_tasks.append(
-                    {
-                        **remote_task,
-                        "status": remote_status.status,
-                        "progress": remote_status.progress,
-                    }
-                )
+                entry = {
+                    **remote_task,
+                    "status": remote_status.status,
+                    "progress": remote_status.progress,
+                }
                 if remote_status.status == "in_progress":
                     all_completed = False
-                    continue
-                if remote_status.status in {"failed", "not_found"}:
-                    job.remote_tasks = updated_remote_tasks
-                    job.save(update_fields=["remote_tasks", "updated_at"])
-                    job.mark_failed(
+                elif (
+                    remote_status.status == "completed"
+                    and remote_status.text is not None
+                ):
+                    entry["text"] = remote_status.text
+                else:
+                    entry["skipped_reason"] = (
                         remote_status.error
                         or remote_status.message
                         or f"Miðeind translation task {remote_status.status}."
                     )
-                    return job
-                if remote_status.status != "completed":
-                    job.remote_tasks = updated_remote_tasks
-                    job.save(update_fields=["remote_tasks", "updated_at"])
-                    job.mark_failed(
-                        f"Unexpected Miðeind translation task status: "
-                        f"{remote_status.status}."
-                    )
-                    return job
-                if remote_status.text is None:
-                    job.remote_tasks = updated_remote_tasks
-                    job.save(update_fields=["remote_tasks", "updated_at"])
-                    job.mark_failed(
-                        "Miðeind completed a translation task without result text."
-                    )
-                    return job
-                translated_texts.append(remote_status.text)
+                updated_remote_tasks.append(entry)
 
             job.remote_tasks = updated_remote_tasks
             job.save(update_fields=["remote_tasks", "updated_at"])
             if not all_completed:
                 return job
 
+            # All tasks finished: resolve each segment to its translation, or to
+            # the original text when it could not be translated.
+            original_texts = self.page_translation_engine.collect_texts(source_page)
+            resolved_texts = []
+            skipped = []
+            for entry in sorted(updated_remote_tasks, key=lambda task: task["index"]):
+                if "text" in entry:
+                    resolved_texts.append(entry["text"])
+                    continue
+                index = entry["index"]
+                original = (
+                    original_texts[index] if index < len(original_texts) else ""
+                )
+                resolved_texts.append(original)
+                skipped.append(
+                    SkippedField(
+                        field_name=_segment_label(original, index),
+                        error=entry.get("skipped_reason", "Not translated."),
+                    )
+                )
+
             result = self.page_translation_engine.apply_translated_texts(
                 source_page,
                 target_page,
-                translated_texts,
+                resolved_texts,
             )
+            result.skipped_fields.extend(skipped)
         except Exception as exc:
             logger.exception("Queued page translation job %s failed.", job.pk)
             job.mark_failed(exc)
             return job
 
-        if result.skipped_fields and not result.translated_fields:
+        if skipped and len(skipped) == len(resolved_texts):
             logger.warning(
-                "Queued page translation job %s failed: all fields were skipped.",
+                "Queued page translation job %s: no segments could be translated.",
                 job.pk,
             )
             job.mark_failed(
-                "All translatable fields were skipped during page translation.",
+                "No text segments could be translated.",
                 result=result,
             )
             return job

@@ -25,6 +25,16 @@ class BackendRequestError(BackendError):
     pass
 
 
+class RateLimitError(BackendError):
+    """Raised when the backend rate-limits the request (HTTP 429).
+
+    This is transient: the same request can succeed once the limit window has
+    passed, so callers may retry the job later.
+    """
+
+    pass
+
+
 class UnsupportedLanguageError(BackendError):
     """Raised when no backend supports the requested language/pair."""
 

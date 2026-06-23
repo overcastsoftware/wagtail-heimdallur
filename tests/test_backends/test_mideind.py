@@ -13,6 +13,7 @@ from wagtail_heimdallur.exceptions import (
     BackendError,
     BackendRequestError,
     BackendTimeoutError,
+    RateLimitError,
     UnsupportedLanguagePairError,
 )
 
@@ -295,6 +296,39 @@ def test_request_timeout_raises_backend_timeout_error(httpx_mock):
 
     with pytest.raises(BackendTimeoutError):
         mideind_backend(timeout=0.01).proofread("text", "is")
+
+
+def test_429_raises_rate_limit_error_when_retries_exhausted(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=429,
+    )
+
+    with pytest.raises(RateLimitError):
+        mideind_backend(rate_limit_retries=0).proofread("text", "is")
+
+
+def test_429_retries_then_succeeds(httpx_mock):
+    # Retry-After: 0 keeps the retry instant.
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/translate/text",
+        status_code=429,
+        headers={"Retry-After": "0"},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/translate/text",
+        status_code=201,
+        json={"taskId": "task-1"},
+    )
+
+    backend = mideind_backend(rate_limit_retries=2)
+    task_id = backend.start_text_translation("halló", "is", "en")
+
+    assert task_id == "task-1"
+    assert len(httpx_mock.get_requests()) == 2
 
 
 def test_400_raises_backend_request_error(httpx_mock):

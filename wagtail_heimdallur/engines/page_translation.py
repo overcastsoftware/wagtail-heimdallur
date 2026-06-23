@@ -12,6 +12,11 @@ from wagtail_heimdallur.models import TranslationJob
 
 logger = logging.getLogger(__name__)
 
+# Keys in a StreamField block's raw data that are structural, not content, and
+# must never be sent for translation (translating a block's UUID would corrupt
+# the StreamField).
+_NON_TRANSLATABLE_BLOCK_KEYS = frozenset({"type", "id"})
+
 
 @dataclass
 class SkippedField:
@@ -219,7 +224,7 @@ class PageTranslationEngine:
             skipped_fields = []
             translated_count = 0
             for key, item in value.items():
-                if key == "type":
+                if key in _NON_TRANSLATABLE_BLOCK_KEYS:
                     translated_data[key] = item
                     continue
 
@@ -235,9 +240,29 @@ class PageTranslationEngine:
             return translated_data, skipped_fields, translated_count
 
         if _is_stream_value_like(value):
-            raw_data = value.raw_data
+            if _is_real_stream_value(value):
+                skipped_fields: list[SkippedField] = []
+                applied_count = [0]
+
+                def _translate_leaf(text):
+                    try:
+                        result = self.translation_engine.translate(
+                            text, source_language, target_language
+                        )
+                    except BackendError as exc:
+                        logger.exception(
+                            "Skipping page translation field %s", field_path
+                        )
+                        skipped_fields.append(SkippedField(field_path, str(exc)))
+                        return text
+                    applied_count[0] += 1
+                    return result
+
+                translated_value = self._walk_stream_value(value, _translate_leaf)
+                return translated_value, skipped_fields, applied_count[0]
+
             translated_raw_data, skipped, translated_count = self._translate_value(
-                raw_data,
+                list(value.raw_data),
                 source_language,
                 target_language,
                 field_path,
@@ -269,12 +294,17 @@ class PageTranslationEngine:
 
         if isinstance(value, dict):
             for key, item in value.items():
-                if key != "type":
+                if key not in _NON_TRANSLATABLE_BLOCK_KEYS:
                     self._collect_texts(item, texts)
             return
 
         if _is_stream_value_like(value):
-            self._collect_texts(value.raw_data, texts)
+            if _is_real_stream_value(value):
+                self._walk_stream_value(
+                    value, lambda text: (texts.append(text), text)[-1]
+                )
+            else:
+                self._collect_texts(list(value.raw_data), texts)
 
     def _apply_translated_value(
         self,
@@ -321,7 +351,7 @@ class PageTranslationEngine:
             translated_data = {}
             translated_count = 0
             for key, item in value.items():
-                if key == "type":
+                if key in _NON_TRANSLATABLE_BLOCK_KEYS:
                     translated_data[key] = item
                     continue
                 translated, item_translated_count = self._apply_translated_value(
@@ -333,8 +363,25 @@ class PageTranslationEngine:
             return translated_data, translated_count
 
         if _is_stream_value_like(value):
+            if _is_real_stream_value(value):
+                applied_count = [0]
+
+                def _take_next(_text):
+                    try:
+                        replacement = next(translated_texts)
+                    except StopIteration as exc:
+                        raise BackendError(
+                            "Miðeind returned fewer translated text values "
+                            "than expected."
+                        ) from exc
+                    applied_count[0] += 1
+                    return replacement
+
+                translated_value = self._walk_stream_value(value, _take_next)
+                return translated_value, applied_count[0]
+
             translated_raw_data, translated_count = self._apply_translated_value(
-                value.raw_data,
+                list(value.raw_data),
                 translated_texts,
             )
             if hasattr(value, "stream_block") and hasattr(value.stream_block, "to_python"):
@@ -342,6 +389,56 @@ class PageTranslationEngine:
             return translated_raw_data, translated_count
 
         return value, 0
+
+    # ------------------------------------------------------------------
+    # Block-aware StreamField traversal.
+    #
+    # A StreamField is translated by walking its blocks and dispatching on the
+    # block *type* — only text-bearing blocks are translated, containers are
+    # recursed into, and everything else (choosers, numbers, choices, URLs, ...)
+    # is left untouched. ``handle_text`` maps a source string to its replacement;
+    # the same walk is shared by collect (record texts) and apply (substitute
+    # translations) so the two stay in lock-step.
+    # ------------------------------------------------------------------
+
+    def _walk_stream_value(self, stream_value: Any, handle_text) -> Any:
+        for child in stream_value:
+            child.value = self._walk_stream_block(child.block, child.value, handle_text)
+        return stream_value
+
+    def _walk_stream_block(self, block: Any, value: Any, handle_text) -> Any:
+        from wagtail import blocks
+        from wagtail.rich_text import RichText
+
+        # URLBlock/EmailBlock subclass CharBlock but must not be translated.
+        if isinstance(block, (blocks.URLBlock, blocks.EmailBlock)):
+            return value
+        if isinstance(
+            block, (blocks.CharBlock, blocks.TextBlock, blocks.BlockQuoteBlock)
+        ):
+            return handle_text(value) if isinstance(value, str) and value else value
+        if isinstance(block, blocks.RawHTMLBlock):
+            return handle_text(value) if value else value
+        if isinstance(block, blocks.RichTextBlock):
+            source = getattr(value, "source", None)
+            if source is None:
+                source = str(value) if value else ""
+            return RichText(handle_text(source)) if source else value
+        if isinstance(block, blocks.StructBlock):
+            for name, child_block in block.child_blocks.items():
+                value[name] = self._walk_stream_block(
+                    child_block, value[name], handle_text
+                )
+            return value
+        if isinstance(block, blocks.ListBlock):
+            for idx in range(len(value)):
+                value[idx] = self._walk_stream_block(
+                    block.child_block, value[idx], handle_text
+                )
+            return value
+        if isinstance(block, blocks.StreamBlock):
+            return self._walk_stream_value(value, handle_text)
+        return value
 
 
 def translate_copied_page(
@@ -429,6 +526,13 @@ def _is_rich_text_like(value: Any) -> bool:
 
 def _is_stream_value_like(value: Any) -> bool:
     return hasattr(value, "raw_data")
+
+
+def _is_real_stream_value(value: Any) -> bool:
+    """A real Wagtail StreamValue (whose blocks can be walked by type), as
+    opposed to a plain raw-data list used in tests."""
+    stream_block = getattr(value, "stream_block", None)
+    return stream_block is not None and hasattr(stream_block, "child_blocks")
 
 
 def _save_draft(page: object) -> None:

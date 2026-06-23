@@ -55,6 +55,32 @@ class InProgressTranslationEngine:
         )
 
 
+class PartialFailTranslationEngine:
+    """Completes every segment except one, which fails on its own."""
+
+    def __init__(self, fail_index, error="SameLanguageError"):
+        self.started_texts = []
+        self.fail_index = fail_index
+        self.error = error
+
+    def start_text_translation(self, text, source_language, target_language):
+        self.started_texts.append(text)
+        return f"remote-task-{len(self.started_texts)}"
+
+    def get_text_translation_status(self, task_id, source_language, target_language):
+        index = int(task_id.rsplit("-", 1)[1]) - 1
+        if index == self.fail_index:
+            return TextTranslationStatus(
+                task_id=task_id, status="failed", progress=100, error=self.error
+            )
+        return TextTranslationStatus(
+            task_id=task_id,
+            status="completed",
+            progress=100,
+            text=f"{self.started_texts[index]}[{source_language}->{target_language}]",
+        )
+
+
 @pytest.mark.django_db
 def test_queue_copied_page_translation_persists_job():
     source, target = _create_source_and_target_pages("queue")
@@ -182,6 +208,39 @@ def test_translation_queue_processor_records_failures():
     assert job.attempts == 1
     assert job.skipped_fields == []
     assert "translation backend unavailable" in job.error_message
+
+
+@pytest.mark.django_db
+def test_per_segment_failure_skips_segment_and_completes_with_warnings():
+    source, target = _create_source_and_target_pages("partial")
+    texts = PageTranslationEngine().collect_texts(source)
+    fail_index = len(texts) - 1  # the last segment "fails" (e.g. same language)
+    engine = PartialFailTranslationEngine(fail_index)
+    engine.started_texts = list(texts)
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.RUNNING,
+        attempts=1,
+        remote_tasks=[
+            {"index": index, "task_id": f"remote-task-{index + 1}", "status": "in_progress"}
+            for index in range(len(texts))
+        ],
+    )
+    processor = TranslationQueueProcessor(PageTranslationEngine(engine))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    target.refresh_from_db()
+    # The whole job is NOT failed; it completes with the bad segment skipped.
+    assert job.status == TranslationJob.Status.COMPLETED_WITH_WARNINGS
+    assert len(job.skipped_fields) == 1
+    assert "SameLanguageError" in job.skipped_fields[0]["error"]
+    # The other segments were still translated.
+    assert target.get_latest_revision().content["title"] == "Source partial[is->en]"
 
 
 @pytest.mark.django_db

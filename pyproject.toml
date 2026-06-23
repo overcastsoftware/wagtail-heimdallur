@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "wagtail-heimdallur"
 version = "0.1.0"
-description = "Wagtail CMS plugin providing inline proofreading, inline translation, and page-level translation capabilities."
+description = "Wagtail CMS plugin providing inline proofreading and page-level translation, with pluggable backends (Miðeind Málstaður by default)."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -51,14 +51,31 @@ Homepage = "https://github.com/overcastsoftware/wagtail-heimdallur"
 Repository = "https://github.com/overcastsoftware/wagtail-heimdallur"
 Issues = "https://github.com/overcastsoftware/wagtail-heimdallur/issues"
 
+# The wheel ships the Python package together with its compiled static assets
+# and templates (which live inside the package and are found by Django's app
+# finders). The TypeScript sources under client/ are build-time only and are
+# excluded.
 [tool.hatch.build.targets.wheel]
 packages = ["wagtail_heimdallur"]
+exclude = [
+    "wagtail_heimdallur/client",
+]
+
+# The sdist excludes the development/demo tree but keeps the package and tests.
+[tool.hatch.build.targets.sdist]
+include = [
+    "wagtail_heimdallur",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+    "tox.ini",
+]
+exclude = [
+    "wagtail_heimdallur/client/node_modules",
+]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 pythonpath = ["."]
 testpaths = ["tests"]
-
-[tool.hatch.build.targets.wheel.shared-data]
-"wagtail_heimdallur/static" = "wagtail_heimdallur/static"
-"wagtail_heimdallur/templates" = "wagtail_heimdallur/templates"
