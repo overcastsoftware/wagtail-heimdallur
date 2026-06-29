@@ -18,6 +18,11 @@ DEFAULTS = {
         # the site default locale", which keeps a translation from being
         # machine-translated back onto its original.
         "source_locales": None,
+        # Dotted paths to StreamField block classes that should NOT be machine
+        # translated (they follow the source like other non-text content, and can
+        # be overridden per locale). RawHTMLBlock is excluded by default so raw
+        # markup/scripts aren't mangled; set to [] to translate everything.
+        "untranslatable_blocks": ["wagtail.blocks.RawHTMLBlock"],
     },
 }
 

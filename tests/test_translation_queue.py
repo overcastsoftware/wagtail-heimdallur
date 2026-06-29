@@ -431,6 +431,32 @@ def test_incremental_flags_replaced_edit():
 
 
 @pytest.mark.django_db
+def test_nontext_change_triggers_reapply_without_text_change():
+    source, target = _create_source_and_target_pages("nontext")
+    segments = PageTranslationEngine().collect_segments(source)
+    _seed_memory(target, segments)  # all text is unchanged
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    engine = PageTranslationEngine(SuffixTranslationEngine())
+    # Simulate a non-text block whose source value changed (new key vs memory).
+    engine.collect_nontext_hashes = lambda page: {"body:ghost": "newhash"}
+    processor = TranslationQueueProcessor(engine)
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    target.refresh_from_db()
+    # No text needed translating, but the draft was still re-applied to sync the
+    # non-text change rather than being skipped as a no-op.
+    assert job.status == TranslationJob.Status.COMPLETED
+    assert target.get_latest_revision() is not None
+
+
+@pytest.mark.django_db
 def test_incremental_prunes_removed_segment_from_memory():
     source, target = _create_source_and_target_pages("prune")
     segments = PageTranslationEngine().collect_segments(source)
@@ -666,6 +692,75 @@ def test_process_translation_queue_command_can_requeue_stale_running_jobs(capsys
 def test_retry_running_requires_age_guard():
     with pytest.raises(CommandError):
         call_command("process_heimdallur_translation_queue", retry_running=True)
+
+
+@pytest.mark.django_db
+def test_command_prunes_old_finished_jobs_but_keeps_memory(capsys):
+    source, target = _create_source_and_target_pages("prune-old")
+    old_job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.COMPLETED,
+    )
+    recent_job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.COMPLETED,
+    )
+    TranslationJob.objects.filter(pk=old_job.pk).update(
+        completed_at=timezone.now() - timedelta(days=40)
+    )
+    TranslationJob.objects.filter(pk=recent_job.pk).update(
+        completed_at=timezone.now() - timedelta(days=1)
+    )
+    TranslationSegment.objects.create(
+        target_page=target, segment_key="title", source_hash="a", translation_hash="b"
+    )
+
+    call_command(
+        "process_heimdallur_translation_queue",
+        prune_completed_older_than_days=30,
+        limit=0,
+    )
+
+    output = capsys.readouterr().out
+    assert "Pruned 1 finished translation jobs." in output
+    assert not TranslationJob.objects.filter(pk=old_job.pk).exists()
+    assert TranslationJob.objects.filter(pk=recent_job.pk).exists()  # too recent
+    # Translation memory is intentionally retained.
+    assert TranslationSegment.objects.filter(target_page=target).count() == 1
+
+
+@pytest.mark.django_db
+def test_until_done_processes_queue_to_completion():
+    from wagtail_heimdallur.management.commands.process_heimdallur_translation_queue import (  # noqa: E501
+        Command,
+    )
+
+    source, target = _create_source_and_target_pages("until-done")
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    processor = TranslationQueueProcessor(
+        PageTranslationEngine(SuffixTranslationEngine())
+    )
+
+    Command()._process_until_done(
+        processor,
+        {"limit": None, "poll_interval": 0, "max_passes": 10},
+    )
+
+    job.refresh_from_db()
+    # One pass submits, the next polls + applies — the loop drains the queue.
+    assert job.status == TranslationJob.Status.COMPLETED
+    assert TranslationJob.objects.processable().count() == 0
 
 
 def _create_source_and_target_pages(slug_suffix):

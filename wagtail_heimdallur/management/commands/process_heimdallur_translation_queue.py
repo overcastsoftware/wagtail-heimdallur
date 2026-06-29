@@ -1,5 +1,7 @@
 """Process queued Wagtail-Heimdallur page translation jobs."""
 
+import time
+
 from django.core.management.base import BaseCommand, CommandError
 
 from wagtail_heimdallur.engines.translation_queue import TranslationQueueProcessor
@@ -37,6 +39,35 @@ class Command(BaseCommand):
             default=None,
             help="Only requeue running jobs older than this many minutes.",
         )
+        parser.add_argument(
+            "--prune-completed-older-than-days",
+            type=int,
+            default=None,
+            help=(
+                "Delete completed/failed job records older than this many days "
+                "before processing (translation memory is kept)."
+            ),
+        )
+        parser.add_argument(
+            "--until-done",
+            action="store_true",
+            help=(
+                "Keep submitting and polling until no jobs remain to process "
+                "(otherwise a single pass is made)."
+            ),
+        )
+        parser.add_argument(
+            "--poll-interval",
+            type=float,
+            default=5.0,
+            help="Seconds to wait between passes when using --until-done.",
+        )
+        parser.add_argument(
+            "--max-passes",
+            type=int,
+            default=1000,
+            help="Safety cap on the number of passes when using --until-done.",
+        )
 
     def handle(self, *args, **options):
         processor = TranslationQueueProcessor()
@@ -64,6 +95,19 @@ class Command(BaseCommand):
             requeued_count = processor.requeue_jobs(retry_statuses)
             self.stdout.write(f"Requeued {requeued_count} translation jobs.")
 
+        prune_days = options["prune_completed_older_than_days"]
+        if prune_days is not None:
+            if prune_days < 0:
+                raise CommandError(
+                    "--prune-completed-older-than-days must not be negative."
+                )
+            pruned_count = processor.prune_completed_jobs(prune_days)
+            self.stdout.write(f"Pruned {pruned_count} finished translation jobs.")
+
+        if options["until_done"]:
+            self._process_until_done(processor, options)
+            return
+
         processable_count = TranslationJob.objects.processable().count()
         processed_count = processor.process_queued(
             limit=options["limit"],
@@ -78,3 +122,33 @@ class Command(BaseCommand):
         )
         if remaining_count:
             self.stdout.write(f"{remaining_count} translation jobs remain.")
+
+    def _process_until_done(self, processor, options):
+        """Submit and poll repeatedly until the queue drains (or the cap hits)."""
+        poll_interval = options["poll_interval"]
+        max_passes = options["max_passes"]
+        total_processed = 0
+        passes = 0
+        while True:
+            passes += 1
+            total_processed += processor.process_queued(limit=options["limit"])
+            remaining = TranslationJob.objects.processable().count()
+            self.stdout.write(f"Pass {passes}: {remaining} translation jobs remain.")
+            if remaining == 0:
+                break
+            if passes >= max_passes:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Stopped after {max_passes} passes with {remaining} "
+                        "jobs still pending."
+                    )
+                )
+                break
+            if poll_interval > 0:
+                time.sleep(poll_interval)
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Processed {total_processed} job-passes over {passes} passes."
+            )
+        )
