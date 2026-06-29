@@ -245,6 +245,40 @@ def test_real_streamfield_apply_preserves_structure_and_non_text():
     assert "stream" in result.translated_fields
 
 
+def test_real_streamfield_collect_segments_uses_stable_block_id_keys():
+    """Segment keys are derived from the field name plus the path of block ids,
+    so they survive edits/reordering rather than depending on position."""
+    segments = dict(PageTranslationEngine().collect_segments(_real_stream_page("is")))
+
+    assert segments["stream:a"] == "Fyrirsogn"  # CharBlock
+    assert segments["stream:b"] == "<p>Texti</p>"  # RichTextBlock
+    assert segments["stream:c:title"] == "Titill"  # nested StructBlock child
+    assert segments["stream:c:intro"] == "<p>Inn</p>"
+    assert segments["stream:d:d1"] == "Eitt"  # ListBlock items, keyed by item id
+    assert segments["stream:d:d2"] == "Tvo"
+    assert all("number" not in key for key in segments)  # IntegerBlock skipped
+
+
+def test_real_streamfield_apply_resolved_segments_is_per_block():
+    """apply_resolved_segments substitutes only the keys it is given and rebuilds
+    the rest of the structure from the source."""
+    engine = PageTranslationEngine()
+    target = _real_stream_page("en")
+
+    result = engine.apply_resolved_segments(
+        _real_stream_page("is"),
+        target,
+        {"stream:a": "NEW HEADING", "stream:d:d2": "NEW BULLET"},
+    )
+
+    out = list(target.stream)
+    assert out[0].value == "NEW HEADING"  # resolved
+    assert list(out[3].value) == ["Eitt", "NEW BULLET"]  # one bullet resolved
+    assert out[2].value["title"] == "Titill"  # untouched key keeps source text
+    assert out[4].value == 7  # IntegerBlock preserved
+    assert "stream" in result.translated_fields
+
+
 def test_page_translation_applies_translated_texts_in_field_order():
     source = Page(
         title="Titill",

@@ -12,6 +12,13 @@ DEFAULTS = {
         "proofreading": {},
         "translation": {},
     },
+    "PAGE_TRANSLATION": {
+        # Which locales are treated as translation sources. This gates where the
+        # "Publish & update translations" page action appears. None means "only
+        # the site default locale", which keeps a translation from being
+        # machine-translated back onto its original.
+        "source_locales": None,
+    },
 }
 
 
@@ -43,6 +50,12 @@ def get_settings() -> dict:
         "translation": user_routing.get(
             "translation", DEFAULTS["LANGUAGE_ROUTING"]["translation"]
         ),
+    }
+
+    # Merge PAGE_TRANSLATION with defaults
+    merged["PAGE_TRANSLATION"] = {
+        **DEFAULTS["PAGE_TRANSLATION"],
+        **user_settings.get("PAGE_TRANSLATION", {}),
     }
 
     return merged

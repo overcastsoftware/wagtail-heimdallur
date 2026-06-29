@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import logging
 from typing import Any
 
@@ -32,10 +33,19 @@ class PageTranslationResult:
 
     translated_fields: list[str] = field(default_factory=list)
     skipped_fields: list[SkippedField] = field(default_factory=list)
+    # Blocks re-translated despite a human having edited the prior translation.
+    # Informational only (surfaced for review); does not flag the job as a
+    # warning the way a skipped/failed segment does.
+    replaced_edits: list[dict] = field(default_factory=list)
 
     @property
     def completed_with_warnings(self) -> bool:
         return bool(self.skipped_fields)
+
+
+def segment_hash(text: str) -> str:
+    """Stable content hash for a translatable text segment."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 class PageTranslationEngine:
@@ -244,7 +254,7 @@ class PageTranslationEngine:
                 skipped_fields: list[SkippedField] = []
                 applied_count = [0]
 
-                def _translate_leaf(text):
+                def _translate_leaf(key, text):
                     try:
                         result = self.translation_engine.translate(
                             text, source_language, target_language
@@ -301,7 +311,7 @@ class PageTranslationEngine:
         if _is_stream_value_like(value):
             if _is_real_stream_value(value):
                 self._walk_stream_value(
-                    value, lambda text: (texts.append(text), text)[-1]
+                    value, lambda key, text: (texts.append(text), text)[-1]
                 )
             else:
                 self._collect_texts(list(value.raw_data), texts)
@@ -366,7 +376,7 @@ class PageTranslationEngine:
             if _is_real_stream_value(value):
                 applied_count = [0]
 
-                def _take_next(_text):
+                def _take_next(key, _text):
                     try:
                         replacement = next(translated_texts)
                     except StopIteration as exc:
@@ -401,12 +411,17 @@ class PageTranslationEngine:
     # translations) so the two stay in lock-step.
     # ------------------------------------------------------------------
 
-    def _walk_stream_value(self, stream_value: Any, handle_text) -> Any:
+    def _walk_stream_value(self, stream_value: Any, handle_text, path: str = "") -> Any:
         for child in stream_value:
-            child.value = self._walk_stream_block(child.block, child.value, handle_text)
+            child_path = f"{path}:{child.id}" if path else str(child.id)
+            child.value = self._walk_stream_block(
+                child.block, child.value, handle_text, child_path
+            )
         return stream_value
 
-    def _walk_stream_block(self, block: Any, value: Any, handle_text) -> Any:
+    def _walk_stream_block(
+        self, block: Any, value: Any, handle_text, path: str = ""
+    ) -> Any:
         from wagtail import blocks
         from wagtail.rich_text import RichText
 
@@ -416,28 +431,148 @@ class PageTranslationEngine:
         if isinstance(
             block, (blocks.CharBlock, blocks.TextBlock, blocks.BlockQuoteBlock)
         ):
-            return handle_text(value) if isinstance(value, str) and value else value
+            return (
+                handle_text(path, value)
+                if isinstance(value, str) and value
+                else value
+            )
         if isinstance(block, blocks.RawHTMLBlock):
-            return handle_text(value) if value else value
+            return handle_text(path, value) if value else value
         if isinstance(block, blocks.RichTextBlock):
             source = getattr(value, "source", None)
             if source is None:
                 source = str(value) if value else ""
-            return RichText(handle_text(source)) if source else value
+            return RichText(handle_text(path, source)) if source else value
         if isinstance(block, blocks.StructBlock):
             for name, child_block in block.child_blocks.items():
                 value[name] = self._walk_stream_block(
-                    child_block, value[name], handle_text
+                    child_block, value[name], handle_text, f"{path}:{name}"
                 )
             return value
         if isinstance(block, blocks.ListBlock):
+            bound_blocks = getattr(value, "bound_blocks", None)
             for idx in range(len(value)):
+                # List items carry stable ids; fall back to the index only when a
+                # build of Wagtail does not expose them.
+                item_id = idx
+                if bound_blocks is not None and idx < len(bound_blocks):
+                    item_id = getattr(bound_blocks[idx], "id", None) or idx
                 value[idx] = self._walk_stream_block(
-                    block.child_block, value[idx], handle_text
+                    block.child_block, value[idx], handle_text, f"{path}:{item_id}"
                 )
             return value
         if isinstance(block, blocks.StreamBlock):
-            return self._walk_stream_value(value, handle_text)
+            return self._walk_stream_value(value, handle_text, path)
+        return value
+
+    # ------------------------------------------------------------------
+    # Segment-keyed walk (incremental translation).
+    #
+    # ``collect_segments`` / ``apply_resolved_segments`` address every
+    # translatable text leaf by a *stable key* — the field name followed by the
+    # path of StreamField block ids down to the leaf. Because the key is derived
+    # from block ids (which survive edits and reordering) rather than position,
+    # a re-translation can match "this block now" to "this block last time" and
+    # only re-translate what actually changed.
+    # ------------------------------------------------------------------
+
+    def collect_segments(self, page: object) -> list[tuple[str, str]]:
+        """Return ``(segment_key, text)`` for every translatable text leaf."""
+        segments: list[tuple[str, str]] = []
+
+        def handle(key, text):
+            segments.append((key, text))
+            return text
+
+        for field_name in _translatable_field_names(page):
+            self._walk_value(getattr(page, field_name, None), handle, field_name)
+        return segments
+
+    def apply_resolved_segments(
+        self,
+        source_page: object,
+        target_page: object,
+        resolved: dict[str, str],
+        replaced_edits: list[dict] | None = None,
+    ) -> PageTranslationResult:
+        """Rebuild target_page's fields from source_page, substituting per key.
+
+        ``resolved`` maps every text segment key to the text to write — a fresh
+        translation for changed blocks, or the preserved (possibly hand-edited)
+        target text for unchanged ones. The result is saved as a draft revision.
+        """
+        result = PageTranslationResult(replaced_edits=list(replaced_edits or []))
+
+        setattr(target_page, "_heimdallur_translation_in_progress", True)
+        try:
+            for field_name in _translatable_field_names(source_page):
+                counted = [0]
+
+                def handle(key, text, counted=counted):
+                    if key in resolved:
+                        counted[0] += 1
+                        return resolved[key]
+                    return text
+
+                new_value = self._walk_value(
+                    getattr(source_page, field_name, None), handle, field_name
+                )
+                setattr(target_page, field_name, new_value)
+                if counted[0]:
+                    result.translated_fields.append(field_name)
+
+            _save_draft(target_page)
+        finally:
+            setattr(target_page, "_heimdallur_translation_in_progress", False)
+
+        setattr(target_page, "_heimdallur_skipped_translation_fields", [])
+        return result
+
+    def _walk_value(self, value: Any, handle, path: str) -> Any:
+        """Path-aware walk over a single field value (used by the keyed methods).
+
+        ``handle(key, text)`` returns the replacement text for each leaf.
+        """
+        if isinstance(value, str):
+            return handle(path, value) if value else value
+
+        if _is_rich_text_like(value):
+            source = value.source or ""
+            if not source:
+                return value
+            return value.__class__(handle(path, source))
+
+        if isinstance(value, list):
+            return [
+                self._walk_value(item, handle, f"{path}.{index}")
+                for index, item in enumerate(value)
+            ]
+
+        if isinstance(value, tuple):
+            return tuple(
+                self._walk_value(item, handle, f"{path}.{index}")
+                for index, item in enumerate(value)
+            )
+
+        if isinstance(value, dict):
+            out = {}
+            for key, item in value.items():
+                if key in _NON_TRANSLATABLE_BLOCK_KEYS:
+                    out[key] = item
+                else:
+                    out[key] = self._walk_value(item, handle, f"{path}.{key}")
+            return out
+
+        if _is_stream_value_like(value):
+            if _is_real_stream_value(value):
+                return self._walk_stream_value(value, handle, path)
+            translated_raw = self._walk_value(list(value.raw_data), handle, path)
+            if hasattr(value, "stream_block") and hasattr(
+                value.stream_block, "to_python"
+            ):
+                return value.stream_block.to_python(translated_raw)
+            return translated_raw
+
         return value
 
 
@@ -461,13 +596,84 @@ def queue_copied_page_translation(source_obj: object, target_obj: object):
     )
 
 
+def queue_update_translation(source_obj: object, target_obj: object):
+    """Enqueue an incremental re-translation of an existing target page.
+
+    Unlike the initial copy, this is guarded: it skips unsupported language
+    pairs and avoids piling up duplicate work when a job is already in flight.
+    """
+    source_language = _language_code(source_obj)
+    target_language = _language_code(target_obj)
+    if not _translation_supported(source_language, target_language):
+        return None
+
+    if TranslationJob.objects.filter(
+        target_page=target_obj,
+        status__in=[
+            TranslationJob.Status.QUEUED,
+            TranslationJob.Status.RUNNING,
+        ],
+    ).exists():
+        return None
+
+    return TranslationJob.objects.create(
+        source_page=source_obj,
+        target_page=target_obj,
+        source_language=source_language,
+        target_language=target_language,
+    )
+
+
 def handle_copy_for_translation_done(sender, source_obj, target_obj, **kwargs):
     """Signal handler for Wagtail's copy_for_translation_done signal."""
     queue_copied_page_translation(source_obj, target_obj)
 
 
+def enqueue_translation_updates(source_obj: object) -> list:
+    """Queue incremental re-translation of a page's existing translations.
+
+    Used by the deliberate "Publish & update translations" page action — the
+    page being acted on is the source, and each of its translations re-translates
+    only the blocks whose source changed.
+    """
+    get_translations = getattr(source_obj, "get_translations", None)
+    if get_translations is None:
+        return []
+
+    source = getattr(source_obj, "specific", source_obj)
+    jobs = []
+    for translation in get_translations(inclusive=False):
+        job = queue_update_translation(
+            source, getattr(translation, "specific", translation)
+        )
+        if job is not None:
+            jobs.append(job)
+    return jobs
+
+
+def page_has_translation_targets(page: object) -> bool:
+    """Whether a page has translations that a configured backend can update."""
+    get_translations = getattr(page, "get_translations", None)
+    if get_translations is None:
+        return False
+    source_language = _language_code(page)
+    try:
+        translations = list(get_translations(inclusive=False))
+    except Exception:  # pragma: no cover - defensive
+        return False
+    return any(
+        _translation_supported(source_language, _language_code(translation))
+        for translation in translations
+    )
+
+
 def connect_page_translation_signal() -> None:
-    """Connect page translation to Wagtail's copy_for_translation_done signal."""
+    """Connect the initial translation to Wagtail's copy_for_translation signal.
+
+    Re-translation after edits is triggered deliberately from the page action
+    menu (see the "Publish & update translations" hook), not automatically on
+    every publish.
+    """
     from wagtail.signals import copy_for_translation_done
 
     copy_for_translation_done.connect(
@@ -475,6 +681,44 @@ def connect_page_translation_signal() -> None:
         dispatch_uid="wagtail_heimdallur.page_translation",
         weak=False,
     )
+
+
+def _translation_supported(source_language: str, target_language: str) -> bool:
+    if (
+        not source_language
+        or not target_language
+        or source_language == target_language
+    ):
+        return False
+    from wagtail_heimdallur.backends.registry import BackendRegistry
+    from wagtail_heimdallur.conf import get_settings
+
+    try:
+        BackendRegistry(get_settings()).get_backend_for_translation(
+            source_language, target_language
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _is_source_locale(instance: object, config: dict) -> bool:
+    locale = getattr(instance, "locale", None)
+    source_locales = config.get("source_locales")
+    if source_locales:
+        code = getattr(locale, "language_code", None)
+        return code in source_locales
+
+    # Default: only the site's default locale is a translation source.
+    if locale is None:
+        return False
+    from wagtail.models import Locale
+
+    try:
+        default_locale = Locale.get_default()
+    except Exception:
+        return False
+    return getattr(locale, "pk", None) == default_locale.pk
 
 
 def _translatable_field_names(page: object) -> list[str]:

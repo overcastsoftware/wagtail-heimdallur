@@ -11,7 +11,10 @@ from wagtail_heimdallur.hooks import (
     PROOFREAD_CLEAR_FEATURE,
     PROOFREAD_ENTITY_FEATURE,
     PROOFREAD_FEATURE,
+    PUBLISH_AND_TRANSLATE_ACTION,
+    PublishAndTranslateMenuItem,
     get_hook_registrations,
+    handle_publish_and_translate_action,
     register_heimdallur_hooks,
     show_translation_in_progress_message,
 )
@@ -69,6 +72,9 @@ def expected_hook_names(features):
                 "register_admin_urls",
                 "register_reports_menu_item",
                 "before_edit_page",
+                "register_page_action_menu_item",
+                "after_edit_page",
+                "after_create_page",
             ]
         )
     return names
@@ -262,3 +268,100 @@ def test_show_translation_in_progress_message_warns_for_active_source_page(monke
     assert warnings
     assert "Target page" in warnings[0]
     assert "queued" in warnings[0]
+
+
+@pytest.mark.django_db
+def test_show_translation_message_prompts_review_of_replaced_edits(monkeypatch):
+    root = Page.get_first_root_node()
+    source = Page(title="Source page", slug="source-review")
+    target = Page(title="Target page", slug="target-review")
+    root.add_child(instance=source)
+    root.add_child(instance=target)
+    TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.COMPLETED,
+        replaced_edits=[{"field_name": "title", "previous": "My edit"}],
+    )
+    warnings = []
+    monkeypatch.setattr(
+        "wagtail_heimdallur.hooks.messages.warning",
+        lambda request, message: warnings.append(str(message)),
+    )
+
+    # has_unpublished_changes gates the review prompt.
+    target.has_unpublished_changes = True
+    show_translation_in_progress_message(SimpleNamespace(), target)
+
+    assert warnings
+    assert "Review the draft" in warnings[0]
+
+
+@pytest.mark.django_db
+def test_publish_and_translate_action_publishes_and_enqueues(monkeypatch):
+    from wagtail.models import Locale
+
+    en = Locale.objects.create(language_code="en")
+    root = Page.get_first_root_node()
+    source = Page(title="Heim", slug="heim-action")
+    root.add_child(instance=source)
+    target = Page(
+        title="Home",
+        slug="home-action",
+        locale=en,
+        translation_key=source.translation_key,
+    )
+    root.add_child(instance=target)
+    # An unpublished draft edit to publish.
+    source.title = "Heim 2"
+    source.save_revision()
+
+    monkeypatch.setattr(
+        "wagtail_heimdallur.hooks.messages.success", lambda request, message: None
+    )
+    request = SimpleNamespace(POST={PUBLISH_AND_TRANSLATE_ACTION: "1"}, user=None)
+
+    handle_publish_and_translate_action(request, source)
+
+    source.refresh_from_db()
+    assert source.title == "Heim 2"  # the draft was published
+    assert TranslationJob.objects.filter(
+        source_page=source, target_page=target
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_publish_and_translate_action_ignored_without_marker():
+    root = Page.get_first_root_node()
+    source = Page(title="Heim", slug="heim-noaction")
+    root.add_child(instance=source)
+    request = SimpleNamespace(POST={}, user=None)
+
+    handle_publish_and_translate_action(request, source)
+
+    assert not TranslationJob.objects.exists()
+
+
+@pytest.mark.django_db
+def test_publish_and_translate_menu_item_only_shown_on_source_with_translations():
+    from wagtail.models import Locale
+
+    en = Locale.objects.create(language_code="en")
+    root = Page.get_first_root_node()
+    source = Page(title="Heim", slug="heim-shown")
+    root.add_child(instance=source)
+    target = Page(
+        title="Home",
+        slug="home-shown",
+        locale=en,
+        translation_key=source.translation_key,
+    )
+    root.add_child(instance=target)
+
+    item = PublishAndTranslateMenuItem()
+    assert item.is_shown({"page": source}) is True
+    # The translation itself (non-source locale) does not show the action.
+    assert item.is_shown({"page": target}) is False
+    assert item.is_shown({"page": None}) is False

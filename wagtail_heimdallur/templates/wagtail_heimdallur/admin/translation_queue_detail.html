@@ -1,0 +1,92 @@
+{% extends "wagtailadmin/generic/base.html" %}
+{% load i18n %}
+
+{% block main_content %}
+    {% trans "Details" as details_title %}
+    {% trans "Segments" as segments_title %}
+
+    <div class="w-tabs" data-controller="w-tabs" data-action="popstate@window->w-tabs#select" data-w-tabs-use-location-value="true">
+        <div class="w-tabs__wrapper">
+            <div role="tablist" class="w-tabs__list" data-action="keydown.right->w-tabs#selectNext keydown.left->w-tabs#selectPrevious keydown.home->w-tabs#selectFirst keydown.end->w-tabs#selectLast">
+                {% include 'wagtailadmin/shared/tabs/tab_nav_link.html' with tab_id="details" title=details_title %}
+                {% include 'wagtailadmin/shared/tabs/tab_nav_link.html' with tab_id="segments" title=segments_title %}
+            </div>
+        </div>
+
+        <div class="tab-content">
+            <section id="tab-details" class="w-tabs__panel" role="tabpanel" hidden aria-labelledby="tab-label-details" data-w-tabs-target="panel">
+                <table class="listing w-mt-5">
+                    <tbody>
+                        <tr><th>{% trans "Status" %}</th><td>{{ job.get_status_display }}</td></tr>
+                        <tr>
+                            <th>{% trans "Source" %}</th>
+                            <td><a href="{% url 'wagtailadmin_pages:edit' job.source_page_id %}">{{ job.source_page.title }}</a></td>
+                        </tr>
+                        <tr>
+                            <th>{% trans "Target" %}</th>
+                            <td><a href="{% url 'wagtailadmin_pages:edit' job.target_page_id %}">{{ job.target_page.title }}</a></td>
+                        </tr>
+                        <tr><th>{% trans "Languages" %}</th><td>{{ job.source_language }} &rarr; {{ job.target_language }}</td></tr>
+                        <tr><th>{% trans "Created" %}</th><td>{{ job.created_at }}</td></tr>
+                        <tr><th>{% trans "Attempts" %}</th><td>{{ job.attempts }}</td></tr>
+                        <tr><th>{% trans "Progress" %}</th><td>{{ job.remote_progress_label }}</td></tr>
+                        {% if job.error_message %}
+                            <tr><th>{% trans "Error" %}</th><td>{{ job.error_message }}</td></tr>
+                        {% endif %}
+                        {% if job.skipped_fields %}
+                            <tr>
+                                <th>{% trans "Skipped" %}</th>
+                                <td>
+                                    {% for skipped in job.skipped_fields %}
+                                        <div>{{ skipped.field_name }}: {{ skipped.error }}</div>
+                                    {% endfor %}
+                                </td>
+                            </tr>
+                        {% endif %}
+                        {% if job.replaced_edits %}
+                            <tr>
+                                <th>{% trans "Replaced edits" %}</th>
+                                <td>
+                                    {% for replaced in job.replaced_edits %}
+                                        <div title="{{ replaced.previous }}">{{ replaced.field_name }}</div>
+                                    {% endfor %}
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="tab-segments" class="w-tabs__panel" role="tabpanel" hidden aria-labelledby="tab-label-segments" data-w-tabs-target="panel">
+                <table class="listing w-mt-5">
+                    <thead>
+                        <tr>
+                            <th>{% trans "Field" %}</th>
+                            <th>{% trans "Status" %}</th>
+                            <th>{% trans "Sent to backend" %}</th>
+                            <th>{% trans "Returned from backend" %}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for segment in segments %}
+                            <tr>
+                                <td><code title="{{ segment.key }}">{{ segment.label }}</code></td>
+                                <td>{{ segment.status }}</td>
+                                <td><div style="max-width:32rem;white-space:pre-wrap;word-break:break-word;">{{ segment.source_text }}</div></td>
+                                <td>
+                                    <div style="max-width:32rem;white-space:pre-wrap;word-break:break-word;">
+                                        {% if segment.skipped_reason %}<em>{{ segment.skipped_reason }}</em>{% else %}{{ segment.translation }}{% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="4">{% trans "No segments were submitted for this job." %}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </section>
+        </div>
+    </div>
+{% endblock %}

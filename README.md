@@ -94,7 +94,7 @@ A dictionary of feature toggles. **Each defaults to `True`** if omitted.
 | Key                  | Default | Effect when `True`                                                                 |
 | -------------------- | ------- | ---------------------------------------------------------------------------------- |
 | `inline_proofreading`| `True`  | Registers the Draftail proofreading control and its API.                            |
-| `page_translation`   | `True`  | Queues a translation job when a page is copied to a new locale, and adds the report.|
+| `page_translation`   | `True`  | Queues a translation job when a page is copied to a new locale, adds the "Publish & update translations" page action, and adds the report.|
 
 Setting a toggle to `False` skips registering the hooks, views, and UI for that
 feature.
@@ -264,6 +264,46 @@ has passed.
 Queue state, progress, failures, and skipped fields are visible in the Wagtail
 admin under **Reports → Translation queue**. When a page has translation work in
 progress, its edit screen shows a warning linking to the queue.
+
+### Keeping translations up to date
+
+After the first translation, edit the source page and use the **Publish & update
+translations** action (in the page's Save/Publish menu) to push your changes to
+its translations. It publishes the page and re-translates each translation — but
+only the blocks whose source text actually changed. Each translatable block is
+tracked by a stable key (derived from StreamField block ids) together with a hash
+of its source text, so an edit to one paragraph re-translates that paragraph
+alone and leaves everything else untouched. This keeps backend usage (and
+rate-limit pressure) proportional to what you changed.
+
+Re-translation does not happen on a plain **Publish** — only via this action, so
+routine edits to a page don't silently regenerate translations.
+
+Re-translations are saved as a **draft** for review, never auto-published:
+
+- Blocks whose source is unchanged keep their current translation, including any
+  manual corrections a translator made.
+- If a changed block's translation had been hand-edited, it is still
+  re-translated, but the block is listed under **Replaced edits** in the queue
+  report and the translated page's edit screen prompts you to review the draft
+  before publishing.
+
+The action only appears on pages in a *source* locale, so you can't accidentally
+machine-translate a translation back onto its original. By default the source
+locale is the site's default locale; configure this under `PAGE_TRANSLATION`:
+
+```python
+WAGTAIL_HEIMDALLUR = {
+    "PAGE_TRANSLATION": {
+        "source_locales": ["is"],       # None = only the site default locale
+    },
+}
+```
+
+> **Note:** re-translation regenerates the translated page's structure from the
+> source, so non-text overrides on the translation (e.g. a locale-specific image
+> chooser) are not preserved across updates — only text edits are. Translate
+> structure/media on the source page, or re-apply such overrides after a review.
 
 Retry jobs after fixing credentials or configuration:
 

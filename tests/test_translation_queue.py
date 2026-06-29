@@ -3,18 +3,38 @@
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
-from wagtail.models import Page
+from wagtail.models import Locale, Page
 import pytest
 from datetime import timedelta
 
 from wagtail_heimdallur.backends.base import TextTranslationStatus
 from wagtail_heimdallur.engines.page_translation import (
     PageTranslationEngine,
+    enqueue_translation_updates,
+    page_has_translation_targets,
     queue_copied_page_translation,
+    queue_update_translation,
+    segment_hash,
 )
 from wagtail_heimdallur.engines.translation_queue import TranslationQueueProcessor
 from wagtail_heimdallur.exceptions import BackendError
-from wagtail_heimdallur.models import TranslationJob
+from wagtail_heimdallur.models import TranslationJob, TranslationSegment
+
+
+def _in_progress_tasks(page):
+    """Build per-segment remote tasks (keyed) as the submit phase would."""
+    segments = PageTranslationEngine().collect_segments(page)
+    tasks = [
+        {
+            "index": index,
+            "key": key,
+            "task_id": f"remote-task-{index + 1}",
+            "status": "in_progress",
+            "source_hash": segment_hash(text),
+        }
+        for index, (key, text) in enumerate(segments)
+    ]
+    return segments, tasks
 
 
 class SuffixTranslationEngine:
@@ -132,15 +152,8 @@ def test_translation_queue_processor_applies_completed_remote_translation():
         remote_task_id="remote-task-1",
     )
     translation_engine = SuffixTranslationEngine()
-    translation_engine.started_texts = PageTranslationEngine().collect_texts(source)
-    job.remote_tasks = [
-        {
-            "index": index,
-            "task_id": f"remote-task-{index + 1}",
-            "status": "in_progress",
-        }
-        for index, _text in enumerate(translation_engine.started_texts)
-    ]
+    segments, job.remote_tasks = _in_progress_tasks(source)
+    translation_engine.started_texts = [text for _key, text in segments]
     job.save(update_fields=["remote_tasks"])
     processor = TranslationQueueProcessor(PageTranslationEngine(translation_engine))
 
@@ -213,10 +226,10 @@ def test_translation_queue_processor_records_failures():
 @pytest.mark.django_db
 def test_per_segment_failure_skips_segment_and_completes_with_warnings():
     source, target = _create_source_and_target_pages("partial")
-    texts = PageTranslationEngine().collect_texts(source)
-    fail_index = len(texts) - 1  # the last segment "fails" (e.g. same language)
+    segments, remote_tasks = _in_progress_tasks(source)
+    fail_index = len(segments) - 1  # the last segment "fails" (e.g. same language)
     engine = PartialFailTranslationEngine(fail_index)
-    engine.started_texts = list(texts)
+    engine.started_texts = [text for _key, text in segments]
     job = TranslationJob.objects.create(
         source_page=source,
         target_page=target,
@@ -224,10 +237,7 @@ def test_per_segment_failure_skips_segment_and_completes_with_warnings():
         target_language="en",
         status=TranslationJob.Status.RUNNING,
         attempts=1,
-        remote_tasks=[
-            {"index": index, "task_id": f"remote-task-{index + 1}", "status": "in_progress"}
-            for index in range(len(texts))
-        ],
+        remote_tasks=remote_tasks,
     )
     processor = TranslationQueueProcessor(PageTranslationEngine(engine))
 
@@ -241,6 +251,330 @@ def test_per_segment_failure_skips_segment_and_completes_with_warnings():
     assert "SameLanguageError" in job.skipped_fields[0]["error"]
     # The other segments were still translated.
     assert target.get_latest_revision().content["title"] == "Source partial[is->en]"
+
+
+def _seed_memory(target, segments, *, translation_hashes=None):
+    """Record translation memory marking every segment as already translated."""
+    translation_hashes = translation_hashes or {}
+    for key, text in segments:
+        TranslationSegment.objects.create(
+            target_page=target,
+            segment_key=key,
+            source_hash=segment_hash(text),
+            translation_hash=translation_hashes.get(key, segment_hash(f"machine::{text}")),
+        )
+
+
+@pytest.mark.django_db
+def test_incremental_unchanged_source_is_a_noop():
+    source, target = _create_source_and_target_pages("noop")
+    segments = PageTranslationEngine().collect_segments(source)
+    _seed_memory(target, segments)
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    engine = SuffixTranslationEngine()
+    processor = TranslationQueueProcessor(PageTranslationEngine(engine))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    target.refresh_from_db()
+    # Nothing changed, so no API calls and no new draft were produced.
+    assert job.status == TranslationJob.Status.COMPLETED
+    assert engine.started_texts == []
+    assert job.remote_tasks == []
+    assert target.get_latest_revision() is None
+
+
+@pytest.mark.django_db
+def test_incremental_submits_only_changed_segment():
+    source, target = _create_source_and_target_pages("changed")
+    segments = PageTranslationEngine().collect_segments(source)
+    _seed_memory(target, segments)
+    # The title's source text changes; everything else stays the same.
+    source.title = "A brand new title"
+    source.save()
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    engine = SuffixTranslationEngine()
+    processor = TranslationQueueProcessor(PageTranslationEngine(engine))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    # Only the changed segment was submitted for translation.
+    assert engine.started_texts == ["A brand new title"]
+    assert len(job.remote_tasks) == 1
+    assert job.remote_tasks[0]["key"] == "title"
+
+
+@pytest.mark.django_db
+def test_incremental_preserves_hand_edited_unchanged_block():
+    source, target = _create_source_and_target_pages("preserve")
+    # A human corrected the slug on the translated page.
+    target.slug = "human-edited-slug"
+    target.save()
+
+    # Only the title is queued for (re)translation; every other segment is
+    # treated as unchanged (no remote task), so it must be preserved as-is.
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.RUNNING,
+        attempts=1,
+        remote_tasks=[
+            {
+                "index": 0,
+                "key": "title",
+                "task_id": "remote-task-1",
+                "status": "in_progress",
+                "source_hash": segment_hash(source.title),
+            }
+        ],
+    )
+    engine = SuffixTranslationEngine()
+    engine.started_texts = [source.title]
+    processor = TranslationQueueProcessor(PageTranslationEngine(engine))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    target.refresh_from_db()
+    content = target.get_latest_revision().content
+    assert job.status == TranslationJob.Status.COMPLETED
+    assert content["title"] == f"{source.title}[is->en]"  # re-translated
+    assert content["slug"] == "human-edited-slug"  # human edit preserved
+
+
+@pytest.mark.django_db
+def test_incremental_preserves_existing_translation_not_live_source_text():
+    root = Page.get_first_root_node()
+    source = Page(title="Hús", slug="hus-src", seo_title="Hús SEO")
+    root.add_child(instance=source)
+    # The translated page's LIVE row is still the Icelandic copy...
+    target = Page(title="Hús", slug="hus-tgt", seo_title="Hús SEO")
+    root.add_child(instance=target)
+    # ...while its latest draft revision holds the existing English translation.
+    target.title = "House"
+    target.seo_title = "House SEO"
+    target.save_revision()
+
+    # Only seo_title is (re)translated; title is unchanged and must keep the
+    # existing English translation rather than reverting to the source text.
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        status=TranslationJob.Status.RUNNING,
+        attempts=1,
+        remote_tasks=[
+            {
+                "index": 0,
+                "key": "seo_title",
+                "task_id": "remote-task-1",
+                "status": "in_progress",
+                "source_hash": segment_hash("Hús SEO"),
+            }
+        ],
+    )
+    engine = SuffixTranslationEngine()
+    engine.started_texts = ["Hús SEO"]
+    processor = TranslationQueueProcessor(PageTranslationEngine(engine))
+
+    processor.process_job(job)
+
+    target.refresh_from_db()
+    content = target.get_latest_revision().content
+    assert content["title"] == "House"  # existing translation preserved
+    assert content["seo_title"] == "Hús SEO[is->en]"  # changed block re-translated
+
+
+@pytest.mark.django_db
+def test_incremental_flags_replaced_edit():
+    source, target = _create_source_and_target_pages("replaced")
+    # The translated title was hand-edited away from the machine output...
+    target.title = "Human polished title"
+    target.save()
+    # ...and the source title has since changed (memory records the old source
+    # and the original machine translation).
+    TranslationSegment.objects.create(
+        target_page=target,
+        segment_key="title",
+        source_hash=segment_hash("the previous source title"),
+        translation_hash=segment_hash("the original machine title"),
+    )
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    engine = SuffixTranslationEngine()
+    processor = TranslationQueueProcessor(PageTranslationEngine(engine))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    titles = [edit for edit in job.replaced_edits if edit["previous"] == "Human polished title"]
+    assert len(titles) == 1
+
+
+@pytest.mark.django_db
+def test_incremental_prunes_removed_segment_from_memory():
+    source, target = _create_source_and_target_pages("prune")
+    segments = PageTranslationEngine().collect_segments(source)
+    _seed_memory(target, segments)
+    # A stale block lingering in memory that no longer exists on the source.
+    TranslationSegment.objects.create(
+        target_page=target,
+        segment_key="body:ghost-block",
+        source_hash=segment_hash("gone"),
+        translation_hash=segment_hash("gone-translated"),
+    )
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    processor = TranslationQueueProcessor(PageTranslationEngine(SuffixTranslationEngine()))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    assert job.status == TranslationJob.Status.COMPLETED
+    assert not TranslationSegment.objects.filter(
+        target_page=target, segment_key="body:ghost-block"
+    ).exists()
+    # The real segments remain in memory.
+    assert TranslationSegment.objects.filter(target_page=target).count() == len(segments)
+
+
+@pytest.mark.django_db
+def test_submit_stores_source_text_for_debug_view():
+    source, target = _create_source_and_target_pages("debug")
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+    )
+    processor = TranslationQueueProcessor(PageTranslationEngine(SuffixTranslationEngine()))
+
+    processor.process_job(job)
+
+    job.refresh_from_db()
+    title_task = next(t for t in job.remote_tasks if t["key"] == "title")
+    assert title_task["source_text"] == "Source debug"
+
+
+@pytest.mark.django_db
+def test_segment_details_pairs_sent_and_returned_text():
+    source, target = _create_source_and_target_pages("segdetail")
+    job = TranslationJob.objects.create(
+        source_page=source,
+        target_page=target,
+        source_language="is",
+        target_language="en",
+        remote_tasks=[
+            {
+                "key": "title",
+                "source_text": "Halló",
+                "text": "Hello",
+                "status": "completed",
+                "task_id": "t1",
+            },
+            {
+                "key": "body",
+                "source_text": "Mál",
+                "status": "failed",
+                "skipped_reason": "SameLanguageError",
+                "task_id": "t2",
+            },
+        ],
+    )
+
+    details = {d["key"]: d for d in job.segment_details}
+
+    assert details["title"]["source_text"] == "Halló"
+    assert details["title"]["translation"] == "Hello"
+    assert details["body"]["translation"] == ""  # nothing came back
+    assert details["body"]["skipped_reason"] == "SameLanguageError"
+
+
+@pytest.mark.django_db
+def test_queue_update_translation_creates_job_for_supported_pair():
+    en = Locale.objects.create(language_code="en")
+    source, target = _create_source_and_target_pages("upd")
+    target.locale = en
+    target.save()
+
+    job = queue_update_translation(source, target)
+
+    assert job is not None
+    assert job.source_language == "is"
+    assert job.target_language == "en"
+    # No duplicate while one is in flight.
+    assert queue_update_translation(source, target) is None
+
+
+@pytest.mark.django_db
+def test_queue_update_translation_skips_unsupported_pair():
+    de = Locale.objects.create(language_code="de")
+    source, target = _create_source_and_target_pages("unsupported")
+    target.locale = de
+    target.save()
+
+    assert queue_update_translation(source, target) is None
+    assert not TranslationJob.objects.filter(target_page=target).exists()
+
+
+def _source_with_translation(suffix):
+    en = Locale.objects.create(language_code="en")
+    root = Page.get_first_root_node()
+    source = Page(title="Heim", slug=f"heim-{suffix}")
+    root.add_child(instance=source)
+    target = Page(
+        title="Home",
+        slug=f"home-{suffix}",
+        locale=en,
+        translation_key=source.translation_key,
+    )
+    root.add_child(instance=target)
+    return source, target
+
+
+@pytest.mark.django_db
+def test_enqueue_translation_updates_queues_for_translations():
+    source, target = _source_with_translation("enq")
+
+    jobs = enqueue_translation_updates(source)
+
+    assert len(jobs) == 1
+    assert TranslationJob.objects.filter(
+        source_page=source, target_page=target
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_page_has_translation_targets_detects_supported_translations():
+    source, target = _source_with_translation("has")
+    assert page_has_translation_targets(source) is True
+    # A page with no translations has nothing to update.
+    lonely = Page(title="Stök", slug="stok-page")
+    Page.get_first_root_node().add_child(instance=lonely)
+    assert page_has_translation_targets(lonely) is False
 
 
 @pytest.mark.django_db

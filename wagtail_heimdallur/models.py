@@ -140,6 +140,10 @@ class TranslationJob(models.Model):
     attempts = models.PositiveIntegerField(default=0)
     translated_fields = models.JSONField(default=list, blank=True)
     skipped_fields = models.JSONField(default=list, blank=True)
+    # Blocks that were re-translated even though a human had edited the existing
+    # translation. Surfaced for review; never blocks the job. Each entry is
+    # {"field_name": <label>, "previous": <the human's text>}.
+    replaced_edits = models.JSONField(default=list, blank=True)
     error_message = models.TextField(blank=True)
     remote_task_id = models.CharField(max_length=255, blank=True)
     remote_tasks = models.JSONField(default=list, blank=True)
@@ -183,6 +187,23 @@ class TranslationJob(models.Model):
             for task in self.remote_tasks
         ]
         return round(sum(progress_values) / len(progress_values))
+
+    @property
+    def segment_details(self) -> list[dict]:
+        """Per-segment debug rows: the text sent and the text that came back."""
+        details = []
+        for task in self.remote_tasks:
+            details.append(
+                {
+                    "key": task.get("key", ""),
+                    "source_text": task.get("source_text", ""),
+                    "translation": task.get("text", ""),
+                    "status": task.get("status", ""),
+                    "skipped_reason": task.get("skipped_reason", ""),
+                    "task_id": task.get("task_id", ""),
+                }
+            )
+        return details
 
     @property
     def remote_progress_label(self) -> str:
@@ -239,6 +260,7 @@ class TranslationJob(models.Model):
         )
         self.translated_fields = list(result.translated_fields)
         self.skipped_fields = self._serialize_skipped_fields(result)
+        self.replaced_edits = list(getattr(result, "replaced_edits", []))
         self.error_message = ""
         self.completed_at = timezone.now()
         self.save(
@@ -246,6 +268,7 @@ class TranslationJob(models.Model):
                 "status",
                 "translated_fields",
                 "skipped_fields",
+                "replaced_edits",
                 "error_message",
                 "completed_at",
                 "updated_at",
@@ -258,9 +281,11 @@ class TranslationJob(models.Model):
         if result is not None:
             self.translated_fields = list(result.translated_fields)
             self.skipped_fields = self._serialize_skipped_fields(result)
+            self.replaced_edits = list(getattr(result, "replaced_edits", []))
         else:
             self.translated_fields = []
             self.skipped_fields = []
+            self.replaced_edits = []
         self.completed_at = timezone.now()
         self.save(
             update_fields=[
@@ -268,6 +293,7 @@ class TranslationJob(models.Model):
                 "error_message",
                 "translated_fields",
                 "skipped_fields",
+                "replaced_edits",
                 "completed_at",
                 "updated_at",
             ]
@@ -278,6 +304,7 @@ class TranslationJob(models.Model):
         self.error_message = ""
         self.translated_fields = []
         self.skipped_fields = []
+        self.replaced_edits = []
         self.remote_task_id = ""
         self.remote_tasks = []
         self.started_at = None
@@ -288,6 +315,7 @@ class TranslationJob(models.Model):
                 "error_message",
                 "translated_fields",
                 "skipped_fields",
+                "replaced_edits",
                 "remote_task_id",
                 "remote_tasks",
                 "started_at",
@@ -295,3 +323,45 @@ class TranslationJob(models.Model):
                 "updated_at",
             ]
         )
+
+
+class TranslationSegment(models.Model):
+    """Per-block translation memory for a single (target page, segment) pair.
+
+    Each translatable text leaf on a translated page is tracked by a stable
+    ``segment_key`` derived from StreamField block ids (so it survives edits and
+    reordering of the source). The two hashes let a re-translation decide, cheaply
+    and per block, what to do:
+
+    * ``source_hash`` — sha256 of the source text we last translated. If the
+      current source text still hashes to this, the block is unchanged and is
+      left alone (preserving any human correction on the target).
+    * ``translation_hash`` — sha256 of the machine output we wrote. If the
+      current target text no longer hashes to this, a human has edited it; when
+      such a block's source *does* change we re-translate but flag it for review
+      rather than silently discarding their work.
+    """
+
+    target_page = models.ForeignKey(
+        "wagtailcore.Page",
+        related_name="heimdallur_translation_segments",
+        on_delete=models.CASCADE,
+    )
+    segment_key = models.CharField(max_length=255)
+    source_hash = models.CharField(max_length=64)
+    translation_hash = models.CharField(max_length=64)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["target_page", "segment_key"],
+                name="heimdallur_unique_segment_per_target",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["target_page", "segment_key"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.target_page_id}:{self.segment_key}"

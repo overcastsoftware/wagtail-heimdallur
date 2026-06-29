@@ -8,13 +8,22 @@ from django.contrib import messages
 from django.urls import include, path, reverse
 from django.urls.exceptions import NoReverseMatch
 from django.utils.translation import gettext_lazy as _
+from django.utils.translation import ngettext
 from django.utils.html import format_html
 from wagtail import hooks as wagtail_hooks
+from wagtail.admin.action_menu import ActionMenuItem
 from wagtail.admin.menu import AdminOnlyMenuItem
 
-from wagtail_heimdallur.conf import DEFAULTS
-from wagtail_heimdallur.engines.page_translation import connect_page_translation_signal
+from wagtail_heimdallur.conf import DEFAULTS, get_settings
+from wagtail_heimdallur.engines.page_translation import (
+    _is_source_locale,
+    connect_page_translation_signal,
+    enqueue_translation_updates,
+    page_has_translation_targets,
+)
 from wagtail_heimdallur.models import TranslationJob
+
+PUBLISH_AND_TRANSLATE_ACTION = "action-publish-and-translate"
 
 PROOFREAD_FEATURE = "heimdallur-proofread"
 PROOFREAD_CLEAR_FEATURE = "heimdallur-proofread-clear"
@@ -64,10 +73,70 @@ def get_hook_registrations(settings: dict) -> list[tuple[str, Callable]]:
                     register_translation_queue_report_menu_item,
                 ),
                 ("before_edit_page", show_translation_in_progress_message),
+                (
+                    "register_page_action_menu_item",
+                    register_publish_and_translate_menu_item,
+                ),
+                ("after_edit_page", handle_publish_and_translate_action),
+                ("after_create_page", handle_publish_and_translate_action),
             ]
         )
 
     return registrations
+
+
+class PublishAndTranslateMenuItem(ActionMenuItem):
+    """A page action that publishes the page and updates its translations.
+
+    Shown only on source-locale pages that have translations a backend can
+    update. Clicking it saves the page, publishes it, and queues an incremental
+    re-translation of each translation (saved as a draft for review).
+    """
+
+    name = PUBLISH_AND_TRANSLATE_ACTION
+    label = _("Publish & update translations")
+    icon_name = "site"
+
+    def get_user_page_permissions_tester(self, context):
+        return context.get("user_page_permissions_tester")
+
+    def is_shown(self, context):
+        page = context.get("page")
+        if page is None:
+            return False
+        settings = get_settings()
+        if not settings["FEATURES"].get("page_translation"):
+            return False
+        tester = self.get_user_page_permissions_tester(context)
+        if tester is not None and not tester.can_publish():
+            return False
+        config = settings.get("PAGE_TRANSLATION", {})
+        return _is_source_locale(page, config) and page_has_translation_targets(page)
+
+
+def register_publish_and_translate_menu_item():
+    """Add the 'Publish & update translations' action to the page action menu."""
+    return PublishAndTranslateMenuItem(order=30)
+
+
+def handle_publish_and_translate_action(request, page):
+    """Publish the page and queue translation updates when the action was used."""
+    if not request.POST.get(PUBLISH_AND_TRANSLATE_ACTION):
+        return None
+
+    revision = page.get_latest_revision()
+    if revision is not None:
+        revision.publish(user=getattr(request, "user", None))
+
+    source = getattr(page, "specific", page)
+    jobs = enqueue_translation_updates(source)
+    if jobs:
+        messages.success(
+            request,
+            _("Page published. %(count)d translation(s) queued for update.")
+            % {"count": len(jobs)},
+        )
+    return None
 
 
 def register_translation_queue_admin_urls():
@@ -138,7 +207,45 @@ def show_translation_in_progress_message(request, page):
                 queue_url,
             ),
         )
+
+    # When a finished re-translation replaced text a human had edited, prompt a
+    # review while the draft is still unpublished.
+    if target_job is None and getattr(page, "has_unpublished_changes", False):
+        review_job = (
+            TranslationJob.objects.filter(
+                target_page_id=page.id,
+                status__in=[
+                    TranslationJob.Status.COMPLETED,
+                    TranslationJob.Status.COMPLETED_WITH_WARNINGS,
+                ],
+            )
+            .order_by("-completed_at")
+            .first()
+        )
+        if review_job is not None and review_job.replaced_edits:
+            messages.warning(
+                request,
+                _with_queue_link(
+                    _replaced_edits_message(review_job),
+                    queue_url,
+                ),
+            )
     return None
+
+
+def _replaced_edits_message(job: TranslationJob):
+    count = len(job.replaced_edits)
+    return format_html(
+        "{}",
+        ngettext(
+            "This translation was updated automatically and %(count)d block you "
+            "had edited was re-translated. Review the draft before publishing.",
+            "This translation was updated automatically and %(count)d blocks you "
+            "had edited were re-translated. Review the draft before publishing.",
+            count,
+        )
+        % {"count": count},
+    )
 
 
 def _translation_queue_url() -> str:

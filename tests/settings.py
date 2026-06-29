@@ -18,6 +18,14 @@ DATABASES = {
 }
 
 USE_TZ = True
+USE_I18N = True
+
+LANGUAGE_CODE = "is"
+WAGTAIL_I18N_ENABLED = True
+LANGUAGES = WAGTAIL_CONTENT_LANGUAGES = [
+    ("is", "Icelandic"),
+    ("en", "English"),
+]
 
 STATIC_URL = "/static/"
 

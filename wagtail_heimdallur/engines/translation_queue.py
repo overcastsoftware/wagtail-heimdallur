@@ -10,9 +10,11 @@ from django.utils import timezone
 
 from wagtail_heimdallur.engines.page_translation import (
     PageTranslationEngine,
+    PageTranslationResult,
     SkippedField,
+    segment_hash,
 )
-from wagtail_heimdallur.models import TranslationJob
+from wagtail_heimdallur.models import TranslationJob, TranslationSegment
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,52 @@ def _segment_label(text: str, index: int) -> str:
     if not text:
         return f"segment {index + 1}"
     return text[:60] + ("…" if len(text) > 60 else "")
+
+
+def _target_revision_object(job):
+    """The translated page as it currently stands — its latest *draft* revision.
+
+    Translations are saved as drafts (never auto-published), so the live page row
+    is usually still the untranslated copy. Reading the live page would make every
+    "unchanged" block fall back to the source language; the latest revision is the
+    real current translation we must preserve.
+    """
+    target = job.target_page.specific
+    getter = getattr(target, "get_latest_revision_as_object", None)
+    if getter is None:
+        return target
+    try:
+        return getter() or target
+    except Exception:  # pragma: no cover - defensive
+        return target
+
+
+def _load_memory(target_page) -> dict[str, tuple[str, str]]:
+    """Per-block translation memory for a target page: key -> (src, translation)."""
+    return {
+        segment.segment_key: (segment.source_hash, segment.translation_hash)
+        for segment in TranslationSegment.objects.filter(target_page=target_page)
+    }
+
+
+def _save_memory(
+    target_page,
+    memory_updates: dict[str, tuple[str, str]],
+    source_keys: set[str],
+) -> None:
+    """Upsert hashes for re-translated blocks and prune blocks no longer present."""
+    for key, (source_hash, translation_hash) in memory_updates.items():
+        TranslationSegment.objects.update_or_create(
+            target_page=target_page,
+            segment_key=key,
+            defaults={
+                "source_hash": source_hash,
+                "translation_hash": translation_hash,
+            },
+        )
+    TranslationSegment.objects.filter(target_page=target_page).exclude(
+        segment_key__in=source_keys
+    ).delete()
 
 
 class TranslationQueueProcessor:
@@ -62,32 +110,14 @@ class TranslationQueueProcessor:
 
         try:
             source_page = job.source_page.specific
-            target_page = job.target_page.specific
+            target_page = _target_revision_object(job)
             if should_submit:
-                texts = self.page_translation_engine.collect_texts(source_page)
-                if not texts:
-                    raise ValueError("Page has no non-empty text values to translate.")
-                remote_tasks = []
-                for index, text in enumerate(texts):
-                    task_id = self.page_translation_engine.start_text_translation(
-                        text,
-                        source_language=job.source_language,
-                        target_language=job.target_language,
-                    )
-                    remote_tasks.append(
-                        {
-                            "index": index,
-                            "task_id": task_id,
-                            "status": "in_progress",
-                        }
-                    )
-                job.mark_remote_tasks_submitted(remote_tasks)
-                return job
+                return self._submit(job, source_page, target_page)
 
-            # Poll every task before deciding anything. A task that fails on its
-            # own (e.g. Miðeind's SameLanguageError when a segment is already in
-            # the target language) does not fail the whole page — that segment is
-            # skipped and its original text kept.
+            # Poll every outstanding task before deciding anything. A task that
+            # fails on its own (e.g. Miðeind's SameLanguageError when a segment is
+            # already in the target language) does not fail the whole page — that
+            # segment is skipped and its original/existing text kept.
             updated_remote_tasks = []
             all_completed = True
             for remote_task in job.remote_tasks:
@@ -121,39 +151,134 @@ class TranslationQueueProcessor:
             if not all_completed:
                 return job
 
-            # All tasks finished: resolve each segment to its translation, or to
-            # the original text when it could not be translated.
-            original_texts = self.page_translation_engine.collect_texts(source_page)
-            resolved_texts = []
-            skipped = []
-            for entry in sorted(updated_remote_tasks, key=lambda task: task["index"]):
-                if "text" in entry:
-                    resolved_texts.append(entry["text"])
-                    continue
-                index = entry["index"]
-                original = (
-                    original_texts[index] if index < len(original_texts) else ""
-                )
-                resolved_texts.append(original)
-                skipped.append(
-                    SkippedField(
-                        field_name=_segment_label(original, index),
-                        error=entry.get("skipped_reason", "Not translated."),
-                    )
-                )
-
-            result = self.page_translation_engine.apply_translated_texts(
-                source_page,
-                target_page,
-                resolved_texts,
-            )
-            result.skipped_fields.extend(skipped)
+            return self._finalize(job, source_page, target_page)
         except Exception as exc:
             logger.exception("Queued page translation job %s failed.", job.pk)
             job.mark_failed(exc)
             return job
 
-        if skipped and len(skipped) == len(resolved_texts):
+    def _submit(self, job, source_page, target_page) -> TranslationJob:
+        """Submit one async task per *changed* segment (incremental).
+
+        Unchanged segments (their source still hashes to what we last translated)
+        are skipped entirely, preserving any human correction on the target.
+        """
+        engine = self.page_translation_engine
+        source_segments = engine.collect_segments(source_page)
+        if not source_segments:
+            raise ValueError("Page has no non-empty text values to translate.")
+
+        memory = _load_memory(target_page)
+        target_texts = dict(engine.collect_segments(target_page))
+
+        remote_tasks = []
+        replaced_edits = []
+        for index, (key, text) in enumerate(source_segments):
+            source_hash = segment_hash(text)
+            known = memory.get(key)
+            if known is not None and known[0] == source_hash:
+                continue  # source unchanged — leave the target block alone
+
+            task_id = engine.start_text_translation(
+                text,
+                source_language=job.source_language,
+                target_language=job.target_language,
+            )
+            remote_tasks.append(
+                {
+                    "index": index,
+                    "key": key,
+                    "task_id": task_id,
+                    "status": "in_progress",
+                    "source_hash": source_hash,
+                    # Kept for the queue detail view so the exact text sent to the
+                    # backend can be compared against what came back.
+                    "source_text": text,
+                }
+            )
+            # Changed source AND the existing translation was hand-edited: we will
+            # re-translate it, but flag it so the reviewer can reconcile.
+            if (
+                known is not None
+                and key in target_texts
+                and segment_hash(target_texts[key]) != known[1]
+            ):
+                replaced_edits.append(
+                    {
+                        "field_name": _segment_label(text, index),
+                        "previous": target_texts[key],
+                    }
+                )
+
+        job.replaced_edits = replaced_edits
+
+        if remote_tasks:
+            job.mark_remote_tasks_submitted(remote_tasks)
+            job.save(update_fields=["replaced_edits", "updated_at"])
+            return job
+
+        # Nothing needs translating. If blocks were removed from the source we
+        # still rebuild the target to drop them; otherwise it is a true no-op.
+        source_keys = {key for key, _ in source_segments}
+        if set(memory) - source_keys:
+            return self._finalize(job, source_page, target_page)
+
+        job.mark_completed(PageTranslationResult())
+        return job
+
+    def _finalize(self, job, source_page, target_page) -> TranslationJob:
+        """Apply results as a draft, preserving unchanged blocks, update memory."""
+        engine = self.page_translation_engine
+        completed_tasks = {
+            task["key"]: task for task in job.remote_tasks if "key" in task
+        }
+        source_segments = engine.collect_segments(source_page)
+        source_keys = {key for key, _ in source_segments}
+        target_texts = dict(engine.collect_segments(target_page))
+
+        resolved: dict[str, str] = {}
+        memory_updates: dict[str, tuple[str, str]] = {}
+        skipped: list[SkippedField] = []
+        translated_ok = 0
+        for index, (key, source_text) in enumerate(source_segments):
+            task = completed_tasks.get(key)
+            if task is not None and "text" in task:
+                resolved[key] = task["text"]
+                memory_updates[key] = (
+                    segment_hash(source_text),
+                    segment_hash(task["text"]),
+                )
+                translated_ok += 1
+            elif task is not None:
+                # Attempted but skipped/failed: keep the existing target text.
+                resolved[key] = target_texts.get(key, source_text)
+                skipped.append(
+                    SkippedField(
+                        _segment_label(source_text, index),
+                        task.get("skipped_reason", "Not translated."),
+                    )
+                )
+            else:
+                # Unchanged: preserve whatever is on the target (incl. edits).
+                resolved[key] = target_texts.get(key, source_text)
+
+        result = engine.apply_resolved_segments(
+            source_page,
+            target_page,
+            resolved,
+            replaced_edits=job.replaced_edits,
+        )
+        result.skipped_fields.extend(skipped)
+        _save_memory(target_page, memory_updates, source_keys)
+
+        # Only a wholesale failure (every attempted segment failed and nothing
+        # else exists) marks the job failed; a partial failure completes with
+        # warnings so the rest of the page still updates.
+        if (
+            skipped
+            and translated_ok == 0
+            and len(skipped) == len(source_segments)
+        ):
             logger.warning(
                 "Queued page translation job %s: no segments could be translated.",
                 job.pk,
