@@ -393,6 +393,47 @@ def test_raw_html_translated_when_not_excluded():
     assert segments["stream:b"] == "<script>x()</script>"  # now translated
 
 
+def test_list_block_round_trips_without_collect_corrupting_ids():
+    """A full collect->apply round-trip must translate ListBlock items.
+
+    The read-only collect walk must not write back into the source: writing into
+    a Wagtail ListValue mints fresh item ids, which would change the keys between
+    the collect pass (that builds the translations) and the apply pass (that
+    looks them up), silently leaving list content untranslated.
+    """
+    from wagtail import blocks
+
+    class _Stream(blocks.StreamBlock):
+        bullets = blocks.ListBlock(blocks.CharBlock())
+
+    # Old-format list value (plain strings, no per-item ids).
+    raw = [{"type": "bullets", "id": "b", "value": ["Eitt", "Tvo"]}]
+    source = StreamPage(stream=_Stream().to_python(raw), locale=Locale("is"))
+    target = StreamPage(stream=_Stream().to_python(raw), locale=Locale("en"))
+
+    engine = PageTranslationEngine()
+    # Build the resolved map from the keys collect actually produces, then apply.
+    resolved = {
+        key: f"{text}-EN" for key, text in engine.collect_segments(source)
+    }
+    engine.apply_resolved_segments(source, target, resolved)
+
+    assert list(list(target.stream)[0].value) == ["Eitt-EN", "Tvo-EN"]
+
+
+def test_collect_segments_does_not_mutate_source_list_ids():
+    source = _real_stream_page("is")
+    bullets = next(
+        c for c in source.stream if type(c.block).__name__ == "ListBlock"
+    )
+    before = [bb.id for bb in bullets.value.bound_blocks]
+
+    PageTranslationEngine().collect_segments(source)
+
+    after = [bb.id for bb in bullets.value.bound_blocks]
+    assert before == after  # read-only collect leaves the stable ids untouched
+
+
 def test_page_translation_applies_translated_texts_in_field_order():
     source = Page(
         title="Titill",

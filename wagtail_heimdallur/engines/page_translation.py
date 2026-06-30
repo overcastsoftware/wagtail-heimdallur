@@ -457,17 +457,30 @@ class PageTranslationEngine:
     # ------------------------------------------------------------------
 
     def _walk_stream_value(
-        self, stream_value: Any, handle_text, path: str = "", handle_value=None
+        self,
+        stream_value: Any,
+        handle_text,
+        path: str = "",
+        handle_value=None,
+        mutate: bool = True,
     ) -> Any:
         for child in stream_value:
             child_path = f"{path}:{child.id}" if path else str(child.id)
-            child.value = self._walk_stream_block(
-                child.block, child.value, handle_text, child_path, handle_value
+            new_value = self._walk_stream_block(
+                child.block, child.value, handle_text, child_path, handle_value, mutate
             )
+            if mutate:
+                child.value = new_value
         return stream_value
 
     def _walk_stream_block(
-        self, block: Any, value: Any, handle_text, path: str = "", handle_value=None
+        self,
+        block: Any,
+        value: Any,
+        handle_text,
+        path: str = "",
+        handle_value=None,
+        mutate: bool = True,
     ) -> Any:
         from wagtail import blocks
         from wagtail.rich_text import RichText
@@ -500,31 +513,44 @@ class PageTranslationEngine:
             return as_nontext()
         if isinstance(block, blocks.StructBlock):
             for name, child_block in block.child_blocks.items():
-                value[name] = self._walk_stream_block(
-                    child_block, value[name], handle_text, f"{path}:{name}", handle_value
+                new_value = self._walk_stream_block(
+                    child_block,
+                    value[name],
+                    handle_text,
+                    f"{path}:{name}",
+                    handle_value,
+                    mutate,
                 )
+                if mutate:
+                    value[name] = new_value
             return value
         if isinstance(block, blocks.ListBlock):
+            # List items carry stable, persisted ids — key by them so a re-translation
+            # can tell which item is which across edits and reordering. The read-only
+            # walk (mutate=False, used by collect) must NOT reassign here: Wagtail's
+            # ListValue.__setitem__ mints a fresh id, which would corrupt the source's
+            # ids before the apply pass reads them.
             bound_blocks = getattr(value, "bound_blocks", None)
             for idx in range(len(value)):
-                # List items carry stable ids; fall back to the index only when a
-                # build of Wagtail does not expose them.
                 item_id = idx
                 if bound_blocks is not None and idx < len(bound_blocks):
                     item_id = getattr(bound_blocks[idx], "id", None) or idx
-                value[idx] = self._walk_stream_block(
+                new_value = self._walk_stream_block(
                     block.child_block,
                     value[idx],
                     handle_text,
                     f"{path}:{item_id}",
                     handle_value,
+                    mutate,
                 )
+                if mutate:
+                    value[idx] = new_value
             return value
         if isinstance(block, blocks.StreamBlock):
-            return self._walk_stream_value(value, handle_text, path, handle_value)
+            return self._walk_stream_value(value, handle_text, path, handle_value, mutate)
         # Any other terminal block (chooser, number, boolean, choice, …) is a
         # non-text leaf.
-        return handle_value(path, block, value) if handle_value else value
+        return as_nontext()
 
     # ------------------------------------------------------------------
     # Segment-keyed walk (incremental translation).
@@ -546,7 +572,9 @@ class PageTranslationEngine:
             return text
 
         for field_name in _translatable_field_names(page):
-            self._walk_value(getattr(page, field_name, None), handle, field_name)
+            self._walk_value(
+                getattr(page, field_name, None), handle, field_name, mutate=False
+            )
         return segments
 
     # ------------------------------------------------------------------
@@ -583,6 +611,7 @@ class PageTranslationEngine:
                 lambda key, text: text,
                 field_name,
                 handle_value,
+                mutate=False,
             )
         return values
 
@@ -602,6 +631,7 @@ class PageTranslationEngine:
                 lambda key, text: text,
                 field_name,
                 handle_value,
+                mutate=False,
             )
         return hashes
 
@@ -693,12 +723,16 @@ class PageTranslationEngine:
         setattr(target_page, "_heimdallur_skipped_translation_fields", [])
         return result
 
-    def _walk_value(self, value: Any, handle, path: str, handle_value=None) -> Any:
+    def _walk_value(
+        self, value: Any, handle, path: str, handle_value=None, mutate: bool = True
+    ) -> Any:
         """Path-aware walk over a single field value (used by the keyed methods).
 
         ``handle(key, text)`` returns the replacement text for each text leaf;
         ``handle_value(key, block, value)`` (optional) intercepts non-text leaves
-        inside StreamFields.
+        inside StreamFields. ``mutate=False`` performs a read-only walk (used by
+        the collect methods) that never writes back into the source — important
+        because writing into a StreamField list regenerates its item ids.
         """
         if isinstance(value, str):
             return handle(path, value) if value else value
@@ -711,13 +745,13 @@ class PageTranslationEngine:
 
         if isinstance(value, list):
             return [
-                self._walk_value(item, handle, f"{path}.{index}", handle_value)
+                self._walk_value(item, handle, f"{path}.{index}", handle_value, mutate)
                 for index, item in enumerate(value)
             ]
 
         if isinstance(value, tuple):
             return tuple(
-                self._walk_value(item, handle, f"{path}.{index}", handle_value)
+                self._walk_value(item, handle, f"{path}.{index}", handle_value, mutate)
                 for index, item in enumerate(value)
             )
 
@@ -728,15 +762,17 @@ class PageTranslationEngine:
                     out[key] = item
                 else:
                     out[key] = self._walk_value(
-                        item, handle, f"{path}.{key}", handle_value
+                        item, handle, f"{path}.{key}", handle_value, mutate
                     )
             return out
 
         if _is_stream_value_like(value):
             if _is_real_stream_value(value):
-                return self._walk_stream_value(value, handle, path, handle_value)
+                return self._walk_stream_value(
+                    value, handle, path, handle_value, mutate
+                )
             translated_raw = self._walk_value(
-                list(value.raw_data), handle, path, handle_value
+                list(value.raw_data), handle, path, handle_value, mutate
             )
             if hasattr(value, "stream_block") and hasattr(
                 value.stream_block, "to_python"
