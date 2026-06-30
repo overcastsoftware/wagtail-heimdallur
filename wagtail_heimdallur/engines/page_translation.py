@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import json
 import logging
 from typing import Any
 
@@ -37,10 +38,18 @@ class PageTranslationResult:
     # Informational only (surfaced for review); does not flag the job as a
     # warning the way a skipped/failed segment does.
     replaced_edits: list[dict] = field(default_factory=list)
+    # Non-text segment memory written during apply: {key: (source_hash, written_hash)},
+    # and the set of non-text keys seen (so the queue can persist/prune them).
+    nontext_updates: dict = field(default_factory=dict)
+    nontext_keys: set = field(default_factory=set)
 
     @property
     def completed_with_warnings(self) -> bool:
         return bool(self.skipped_fields)
+
+
+# Sentinel for "this non-text block does not exist on the target".
+_MISSING = object()
 
 
 def segment_hash(text: str) -> str:
@@ -53,6 +62,42 @@ class PageTranslationEngine:
 
     def __init__(self, translation_engine: TranslationEngine | None = None):
         self.translation_engine = translation_engine or TranslationEngine()
+        self._untranslatable_block_classes: tuple | None = None
+
+    def _excluded_block_classes(self) -> tuple:
+        """Block classes configured (or defaulted) to skip translation."""
+        if self._untranslatable_block_classes is None:
+            from django.utils.module_loading import import_string
+
+            from wagtail_heimdallur.conf import get_settings
+
+            paths = (
+                get_settings()
+                .get("PAGE_TRANSLATION", {})
+                .get("untranslatable_blocks", [])
+            )
+            classes = []
+            for path in paths:
+                try:
+                    classes.append(import_string(path))
+                except ImportError:
+                    logger.warning(
+                        "Heimdallur: could not import untranslatable block %r", path
+                    )
+            self._untranslatable_block_classes = tuple(classes)
+        return self._untranslatable_block_classes
+
+    def _block_translatable(self, block: Any) -> bool:
+        """Whether a text-bearing block should be machine translated.
+
+        Honors a ``translatable = False`` attribute on the block and the
+        configured ``untranslatable_blocks`` list. Non-translatable blocks are
+        treated as non-text content (synced from source / overridable).
+        """
+        if getattr(block, "translatable", True) is False:
+            return False
+        excluded = self._excluded_block_classes()
+        return not (excluded and isinstance(block, excluded))
 
     def translate_page(
         self,
@@ -411,42 +456,52 @@ class PageTranslationEngine:
     # translations) so the two stay in lock-step.
     # ------------------------------------------------------------------
 
-    def _walk_stream_value(self, stream_value: Any, handle_text, path: str = "") -> Any:
+    def _walk_stream_value(
+        self, stream_value: Any, handle_text, path: str = "", handle_value=None
+    ) -> Any:
         for child in stream_value:
             child_path = f"{path}:{child.id}" if path else str(child.id)
             child.value = self._walk_stream_block(
-                child.block, child.value, handle_text, child_path
+                child.block, child.value, handle_text, child_path, handle_value
             )
         return stream_value
 
     def _walk_stream_block(
-        self, block: Any, value: Any, handle_text, path: str = ""
+        self, block: Any, value: Any, handle_text, path: str = "", handle_value=None
     ) -> Any:
         from wagtail import blocks
         from wagtail.rich_text import RichText
 
-        # URLBlock/EmailBlock subclass CharBlock but must not be translated.
+        def as_nontext():
+            return handle_value(path, block, value) if handle_value else value
+
+        # URLBlock/EmailBlock subclass CharBlock but must not be translated — they
+        # are non-text leaves (e.g. EmbedBlock subclasses URLBlock).
         if isinstance(block, (blocks.URLBlock, blocks.EmailBlock)):
-            return value
+            return as_nontext()
         if isinstance(
-            block, (blocks.CharBlock, blocks.TextBlock, blocks.BlockQuoteBlock)
+            block,
+            (
+                blocks.CharBlock,
+                blocks.TextBlock,
+                blocks.BlockQuoteBlock,
+                blocks.RawHTMLBlock,
+            ),
         ):
-            return (
-                handle_text(path, value)
-                if isinstance(value, str) and value
-                else value
-            )
-        if isinstance(block, blocks.RawHTMLBlock):
-            return handle_text(path, value) if value else value
+            if self._block_translatable(block) and isinstance(value, str) and value:
+                return handle_text(path, value)
+            return as_nontext()
         if isinstance(block, blocks.RichTextBlock):
             source = getattr(value, "source", None)
             if source is None:
                 source = str(value) if value else ""
-            return RichText(handle_text(path, source)) if source else value
+            if self._block_translatable(block) and source:
+                return RichText(handle_text(path, source))
+            return as_nontext()
         if isinstance(block, blocks.StructBlock):
             for name, child_block in block.child_blocks.items():
                 value[name] = self._walk_stream_block(
-                    child_block, value[name], handle_text, f"{path}:{name}"
+                    child_block, value[name], handle_text, f"{path}:{name}", handle_value
                 )
             return value
         if isinstance(block, blocks.ListBlock):
@@ -458,12 +513,18 @@ class PageTranslationEngine:
                 if bound_blocks is not None and idx < len(bound_blocks):
                     item_id = getattr(bound_blocks[idx], "id", None) or idx
                 value[idx] = self._walk_stream_block(
-                    block.child_block, value[idx], handle_text, f"{path}:{item_id}"
+                    block.child_block,
+                    value[idx],
+                    handle_text,
+                    f"{path}:{item_id}",
+                    handle_value,
                 )
             return value
         if isinstance(block, blocks.StreamBlock):
-            return self._walk_stream_value(value, handle_text, path)
-        return value
+            return self._walk_stream_value(value, handle_text, path, handle_value)
+        # Any other terminal block (chooser, number, boolean, choice, …) is a
+        # non-text leaf.
+        return handle_value(path, block, value) if handle_value else value
 
     # ------------------------------------------------------------------
     # Segment-keyed walk (incremental translation).
@@ -488,20 +549,110 @@ class PageTranslationEngine:
             self._walk_value(getattr(page, field_name, None), handle, field_name)
         return segments
 
+    # ------------------------------------------------------------------
+    # Non-text leaves (choosers, embeds, numbers, …).
+    #
+    # These are not translated. By default they follow the source, but a
+    # translator can deliberately override one per locale (e.g. a localized
+    # video in an EmbedBlock). The override is *sticky*: once a block diverges
+    # from the value we last wrote, it is left alone on every future
+    # re-translation, while un-overridden blocks keep syncing from the source.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hash_block_value(block: Any, value: Any) -> str | None:
+        """Stable hash of a non-text block value, or None if it can't be hashed."""
+        try:
+            prepared = block.get_prep_value(value)
+            serialized = json.dumps(prepared, sort_keys=True, default=str)
+        except Exception:
+            return None
+        return segment_hash(serialized)
+
+    def collect_nontext_values(self, page: object) -> dict[str, Any]:
+        """Map each non-text StreamField leaf to its current value."""
+        values: dict[str, Any] = {}
+
+        def handle_value(key, block, value):
+            values[key] = value
+            return value
+
+        for field_name in _translatable_field_names(page):
+            self._walk_value(
+                getattr(page, field_name, None),
+                lambda key, text: text,
+                field_name,
+                handle_value,
+            )
+        return values
+
+    def collect_nontext_hashes(self, page: object) -> dict[str, str]:
+        """Map each non-text StreamField leaf to a hash of its current value."""
+        hashes: dict[str, str] = {}
+
+        def handle_value(key, block, value):
+            value_hash = self._hash_block_value(block, value)
+            if value_hash is not None:
+                hashes[key] = value_hash
+            return value
+
+        for field_name in _translatable_field_names(page):
+            self._walk_value(
+                getattr(page, field_name, None),
+                lambda key, text: text,
+                field_name,
+                handle_value,
+            )
+        return hashes
+
+    def _resolve_nontext(
+        self, key, block, source_value, target_values, nontext_memory, updates
+    ):
+        """Decide the value to write for one non-text leaf (sticky override)."""
+        source_hash = self._hash_block_value(block, source_value)
+        if source_hash is None:
+            # Can't hash this block — fall back to following the source (the
+            # previous behaviour), without tracking it.
+            return source_value
+
+        target_value = target_values.get(key, _MISSING)
+        known = nontext_memory.get(key)
+        if target_value is _MISSING or known is None:
+            # New block, or first time we track it: sync from source.
+            updates[key] = (source_hash, source_hash)
+            return source_value
+
+        written_hash = known[1]
+        if self._hash_block_value(block, target_value) == written_hash:
+            # The target still holds what we wrote — not overridden — so follow
+            # the source.
+            updates[key] = (source_hash, source_hash)
+            return source_value
+
+        # The translator overrode this block: keep their value, and preserve the
+        # written hash so it stays recognised as an override next time.
+        updates[key] = (source_hash, written_hash)
+        return target_value
+
     def apply_resolved_segments(
         self,
         source_page: object,
         target_page: object,
         resolved: dict[str, str],
+        nontext_memory: dict | None = None,
         replaced_edits: list[dict] | None = None,
     ) -> PageTranslationResult:
         """Rebuild target_page's fields from source_page, substituting per key.
 
         ``resolved`` maps every text segment key to the text to write — a fresh
         translation for changed blocks, or the preserved (possibly hand-edited)
-        target text for unchanged ones. The result is saved as a draft revision.
+        target text for unchanged ones. Non-text leaves follow the source unless
+        the translator overrode them (sticky), using ``nontext_memory``. The
+        result is saved as a draft revision.
         """
         result = PageTranslationResult(replaced_edits=list(replaced_edits or []))
+        nontext_memory = nontext_memory or {}
+        target_nontext = self.collect_nontext_values(target_page)
 
         setattr(target_page, "_heimdallur_translation_in_progress", True)
         try:
@@ -514,8 +665,22 @@ class PageTranslationEngine:
                         return resolved[key]
                     return text
 
+                def handle_value(key, block, value):
+                    result.nontext_keys.add(key)
+                    return self._resolve_nontext(
+                        key,
+                        block,
+                        value,
+                        target_nontext,
+                        nontext_memory,
+                        result.nontext_updates,
+                    )
+
                 new_value = self._walk_value(
-                    getattr(source_page, field_name, None), handle, field_name
+                    getattr(source_page, field_name, None),
+                    handle,
+                    field_name,
+                    handle_value,
                 )
                 setattr(target_page, field_name, new_value)
                 if counted[0]:
@@ -528,10 +693,12 @@ class PageTranslationEngine:
         setattr(target_page, "_heimdallur_skipped_translation_fields", [])
         return result
 
-    def _walk_value(self, value: Any, handle, path: str) -> Any:
+    def _walk_value(self, value: Any, handle, path: str, handle_value=None) -> Any:
         """Path-aware walk over a single field value (used by the keyed methods).
 
-        ``handle(key, text)`` returns the replacement text for each leaf.
+        ``handle(key, text)`` returns the replacement text for each text leaf;
+        ``handle_value(key, block, value)`` (optional) intercepts non-text leaves
+        inside StreamFields.
         """
         if isinstance(value, str):
             return handle(path, value) if value else value
@@ -544,13 +711,13 @@ class PageTranslationEngine:
 
         if isinstance(value, list):
             return [
-                self._walk_value(item, handle, f"{path}.{index}")
+                self._walk_value(item, handle, f"{path}.{index}", handle_value)
                 for index, item in enumerate(value)
             ]
 
         if isinstance(value, tuple):
             return tuple(
-                self._walk_value(item, handle, f"{path}.{index}")
+                self._walk_value(item, handle, f"{path}.{index}", handle_value)
                 for index, item in enumerate(value)
             )
 
@@ -560,13 +727,17 @@ class PageTranslationEngine:
                 if key in _NON_TRANSLATABLE_BLOCK_KEYS:
                     out[key] = item
                 else:
-                    out[key] = self._walk_value(item, handle, f"{path}.{key}")
+                    out[key] = self._walk_value(
+                        item, handle, f"{path}.{key}", handle_value
+                    )
             return out
 
         if _is_stream_value_like(value):
             if _is_real_stream_value(value):
-                return self._walk_stream_value(value, handle, path)
-            translated_raw = self._walk_value(list(value.raw_data), handle, path)
+                return self._walk_stream_value(value, handle, path, handle_value)
+            translated_raw = self._walk_value(
+                list(value.raw_data), handle, path, handle_value
+            )
             if hasattr(value, "stream_block") and hasattr(
                 value.stream_block, "to_python"
             ):

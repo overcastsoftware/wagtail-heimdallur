@@ -253,7 +253,19 @@ python manage.py process_heimdallur_translation_queue
 The command submits queued text to the backend's asynchronous translation
 endpoint, then on later runs polls running tasks and applies completed
 translations to the draft page. Use `--limit` to cap how many jobs a single run
-processes.
+processes, or `--until-done` to keep submitting and polling in one invocation
+until the queue drains (tune the loop with `--poll-interval` and `--max-passes`):
+
+```bash
+python manage.py process_heimdallur_translation_queue --until-done
+```
+
+Job records accumulate over time; prune finished ones (translation memory is
+kept) with:
+
+```bash
+python manage.py process_heimdallur_translation_queue --prune-completed-older-than-days 30
+```
 
 A page is submitted as one request per text segment, so a content-heavy page can
 make many requests in quick succession. If the backend rate-limits you (HTTP 429,
@@ -296,14 +308,28 @@ locale is the site's default locale; configure this under `PAGE_TRANSLATION`:
 WAGTAIL_HEIMDALLUR = {
     "PAGE_TRANSLATION": {
         "source_locales": ["is"],       # None = only the site default locale
+        # StreamField block classes that must not be machine translated. They
+        # follow the source like other non-text content and can be overridden
+        # per locale. Defaults to excluding RawHTMLBlock; set to [] to translate
+        # everything.
+        "untranslatable_blocks": ["wagtail.blocks.RawHTMLBlock"],
     },
 }
 ```
 
-> **Note:** re-translation regenerates the translated page's structure from the
-> source, so non-text overrides on the translation (e.g. a locale-specific image
-> chooser) are not preserved across updates — only text edits are. Translate
-> structure/media on the source page, or re-apply such overrides after a review.
+#### Non-text content (choosers, embeds, numbers …) and overrides
+
+Non-translatable content inside StreamFields follows the source by default — an
+image, number or link you change on the source page syncs to its translations.
+A translator can also **override** such a block per locale (e.g. a localized
+video in an `EmbedBlock`); that override is **sticky** — it is preserved on every
+future re-translation, while un-overridden blocks keep following the source.
+There is no "reset to source" action, so an overridden block stays overridden
+until the translator changes it back themselves.
+
+To stop a *text* block from being machine translated (so it behaves like the
+non-text content above), either set `translatable = False` on the block class or
+add its dotted path to `untranslatable_blocks`.
 
 Retry jobs after fixing credentials or configuration:
 

@@ -217,10 +217,19 @@ class TranslationQueueProcessor:
             job.save(update_fields=["replaced_edits", "updated_at"])
             return job
 
-        # Nothing needs translating. If blocks were removed from the source we
-        # still rebuild the target to drop them; otherwise it is a true no-op.
+        # No text to translate, but we still rebuild the draft when the structure
+        # changed (blocks removed) or a non-text value (chooser/embed/number)
+        # changed on the source — so those stay in sync. A true no-op is skipped
+        # to avoid resetting the target or spamming revisions.
         source_keys = {key for key, _ in source_segments}
-        if set(memory) - source_keys:
+        nontext_hashes = engine.collect_nontext_hashes(source_page)
+        all_source_keys = source_keys | set(nontext_hashes)
+        removed = set(memory) - all_source_keys
+        nontext_changed = any(
+            memory.get(key) is None or memory[key][0] != value_hash
+            for key, value_hash in nontext_hashes.items()
+        )
+        if removed or nontext_changed:
             return self._finalize(job, source_page, target_page)
 
         job.mark_completed(PageTranslationResult())
@@ -229,6 +238,7 @@ class TranslationQueueProcessor:
     def _finalize(self, job, source_page, target_page) -> TranslationJob:
         """Apply results as a draft, preserving unchanged blocks, update memory."""
         engine = self.page_translation_engine
+        memory = _load_memory(target_page)
         completed_tasks = {
             task["key"]: task for task in job.remote_tasks if "key" in task
         }
@@ -266,10 +276,15 @@ class TranslationQueueProcessor:
             source_page,
             target_page,
             resolved,
+            nontext_memory=memory,
             replaced_edits=job.replaced_edits,
         )
         result.skipped_fields.extend(skipped)
-        _save_memory(target_page, memory_updates, source_keys)
+        # Persist text + non-text memory, keeping every key currently present so
+        # the prune only drops blocks that were actually removed.
+        memory_updates.update(result.nontext_updates)
+        keep_keys = source_keys | result.nontext_keys
+        _save_memory(target_page, memory_updates, keep_keys)
 
         # Only a wholesale failure (every attempted segment failed and nothing
         # else exists) marks the job failed; a partial failure completes with
@@ -308,3 +323,22 @@ class TranslationQueueProcessor:
             job.reset_for_retry()
             requeued += 1
         return requeued
+
+    def prune_completed_jobs(self, older_than_days: int) -> int:
+        """Delete finished job records older than the cutoff.
+
+        Only the job history is removed — TranslationSegment rows are the
+        translation memory and are kept (they are pruned per page as content
+        changes, and cascade when a page is deleted).
+        """
+        cutoff = timezone.now() - timedelta(days=older_than_days)
+        jobs = TranslationJob.objects.filter(
+            status__in=[
+                TranslationJob.Status.COMPLETED,
+                TranslationJob.Status.COMPLETED_WITH_WARNINGS,
+                TranslationJob.Status.FAILED,
+            ],
+            completed_at__lte=cutoff,
+        )
+        pruned, _ = jobs.delete()
+        return pruned

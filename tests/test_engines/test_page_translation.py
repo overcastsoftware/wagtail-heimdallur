@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from django.test import override_settings
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
@@ -277,6 +278,119 @@ def test_real_streamfield_apply_resolved_segments_is_per_block():
     assert out[2].value["title"] == "Titill"  # untouched key keeps source text
     assert out[4].value == 7  # IntegerBlock preserved
     assert "stream" in result.translated_fields
+
+
+def _number_block(page):
+    for child in page.stream:
+        if type(child.block).__name__ == "IntegerBlock":
+            return child.block
+    raise AssertionError("no IntegerBlock in fixture")
+
+
+def _set_number(page, value):
+    for child in page.stream:
+        if type(child.block).__name__ == "IntegerBlock":
+            child.value = value
+
+
+def _get_number(page):
+    for child in page.stream:
+        if type(child.block).__name__ == "IntegerBlock":
+            return child.value
+    return None
+
+
+def test_collect_nontext_hashes_covers_only_non_text_leaves():
+    hashes = PageTranslationEngine().collect_nontext_hashes(_real_stream_page("is"))
+    assert "stream:e" in hashes  # IntegerBlock (non-text)
+    assert "stream:a" not in hashes  # heading CharBlock is a text leaf
+
+
+def test_resolve_nontext_sticky_decisions():
+    engine = PageTranslationEngine()
+    block = _number_block(_real_stream_page("is"))
+    seven = engine._hash_block_value(block, 7)
+
+    # New block (no target / no memory): sync from source and record it.
+    updates = {}
+    assert engine._resolve_nontext("k", block, 7, {"k": 7}, {}, updates) == 7
+    assert updates["k"] == (seven, seven)
+
+    # Target still holds what we wrote (not overridden): follow the source change.
+    updates = {}
+    assert engine._resolve_nontext("k", block, 8, {"k": 7}, {"k": (seven, seven)}, updates) == 8
+
+    # Target diverged (overridden): keep it, even though the source changed.
+    updates = {}
+    assert engine._resolve_nontext("k", block, 8, {"k": 99}, {"k": (seven, seven)}, updates) == 99
+
+
+def test_apply_keeps_overridden_nontext_block():
+    engine = PageTranslationEngine()
+    source = _real_stream_page("is")  # number = 7
+    target = _real_stream_page("en")
+    _set_number(target, 99)  # translator's per-locale override
+    seven = engine._hash_block_value(_number_block(source), 7)
+
+    engine.apply_resolved_segments(
+        source, target, {}, nontext_memory={"stream:e": (seven, seven)}
+    )
+
+    assert _get_number(target) == 99  # sticky override survived the rebuild
+
+
+def test_apply_syncs_nontext_block_when_not_overridden():
+    engine = PageTranslationEngine()
+    source = _real_stream_page("is")
+    _set_number(source, 8)  # source value changed
+    target = _real_stream_page("en")  # still holds 7 (what we last wrote)
+    seven = engine._hash_block_value(_number_block(source), 7)
+
+    engine.apply_resolved_segments(
+        source, target, {}, nontext_memory={"stream:e": (seven, seven)}
+    )
+
+    assert _get_number(target) == 8  # un-overridden block follows the source
+
+
+def _optout_page():
+    from wagtail import blocks
+
+    class _NoTranslate(blocks.CharBlock):
+        translatable = False
+
+    class _Stream(blocks.StreamBlock):
+        heading = blocks.CharBlock()
+        raw = blocks.RawHTMLBlock()
+        code = _NoTranslate()
+
+    raw = [
+        {"type": "heading", "value": "Hi", "id": "a"},
+        {"type": "raw", "value": "<script>x()</script>", "id": "b"},
+        {"type": "code", "value": "verbatim", "id": "c"},
+    ]
+    return StreamPage(stream=_Stream().to_python(raw), locale=Locale("is"))
+
+
+def test_untranslatable_blocks_are_skipped_for_translation():
+    engine = PageTranslationEngine()
+    page = _optout_page()
+
+    # Only the plain CharBlock is collected for translation.
+    assert dict(engine.collect_segments(page)) == {"stream:a": "Hi"}
+    # RawHTMLBlock (excluded by default) and translatable=False block are tracked
+    # as non-text instead (synced from source / overridable).
+    nontext = engine.collect_nontext_hashes(page)
+    assert "stream:b" in nontext and "stream:c" in nontext
+
+
+@override_settings(
+    WAGTAIL_HEIMDALLUR={"PAGE_TRANSLATION": {"untranslatable_blocks": []}}
+)
+def test_raw_html_translated_when_not_excluded():
+    engine = PageTranslationEngine()
+    segments = dict(engine.collect_segments(_optout_page()))
+    assert segments["stream:b"] == "<script>x()</script>"  # now translated
 
 
 def test_page_translation_applies_translated_texts_in_field_order():
