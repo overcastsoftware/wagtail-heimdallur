@@ -393,6 +393,113 @@ def test_raw_html_translated_when_not_excluded():
     assert segments["stream:b"] == "<script>x()</script>"  # now translated
 
 
+class _FakeChild:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _FakeRelManager:
+    def __init__(self, items):
+        self._items = list(items)
+        self.set_calls = []
+
+    def all(self):
+        return list(self._items)
+
+    def set(self, items, bulk=True):
+        self._items = list(items)
+        self.set_calls.append(bulk)
+
+
+class _FakeFormPage:
+    def __init__(self, fields=None, page_fields=None):
+        self.form_fields = _FakeRelManager(fields or [])
+        self._page_fields = page_fields or {}
+        for key, value in self._page_fields.items():
+            setattr(self, key, value)
+        self.saved = False
+
+    def get_translatable_field_names(self):
+        return list(self._page_fields)
+
+    def save_revision(self):
+        self.saved = True
+
+
+def test_child_relation_skipped_when_not_translatable():
+    # Children without a translation_key can't be matched reliably, so the whole
+    # relation is skipped (only the page field is collected).
+    page = _FakeFormPage(
+        fields=[_FakeChild(label="Nafn", help_text="", choices="")],
+        page_fields={"title": "Titill"},
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(page))
+
+    assert segments == {"title": "Titill"}
+
+
+def test_child_segments_collected_and_applied_by_translation_key():
+    source = _FakeFormPage(
+        fields=[
+            _FakeChild(label="Nafn", help_text="Hjálp", choices="", translation_key="tk-1"),
+        ],
+        page_fields={"title": "Titill"},
+    )
+    target = _FakeFormPage(
+        fields=[_FakeChild(label="Nafn", help_text="Hjálp", choices="", translation_key="tk-1")],
+        page_fields={"title": "Titill"},
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(source))
+    assert segments["form_fields:tk-1:label"] == "Nafn"  # keyed by translation_key
+    assert segments["form_fields:tk-1:help_text"] == "Hjálp"
+
+    PageTranslationEngine().apply_resolved_segments(
+        source, target, {"form_fields:tk-1:label": "Name"}
+    )
+    assert target.form_fields.all()[0].label == "Name"
+    assert target.form_fields.set_calls  # persisted via .set()
+
+
+def test_apply_matches_translatable_children_regardless_of_order():
+    # Target children are in a different order than the source; matching by
+    # translation_key must still put each translation on the right child.
+    target = _FakeFormPage(
+        fields=[
+            _FakeChild(label="B", help_text="", choices="", translation_key="tk-b"),
+            _FakeChild(label="A", help_text="", choices="", translation_key="tk-a"),
+        ]
+    )
+
+    PageTranslationEngine().apply_resolved_segments(
+        _FakeFormPage(),
+        target,
+        {"form_fields:tk-a:label": "A-EN", "form_fields:tk-b:label": "B-EN"},
+    )
+
+    labels = {c.translation_key: c.label for c in target.form_fields.all()}
+    assert labels["tk-a"] == "A-EN"
+    assert labels["tk-b"] == "B-EN"
+
+
+def test_untranslatable_page_fields_are_excluded():
+    page = _FakeFormPage(
+        page_fields={
+            "title": "Titill",
+            "to_address": "forms@example.is",
+            "from_address": "no-reply@example.is",
+        }
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(page))
+
+    assert "title" in segments
+    assert "to_address" not in segments  # email config not translated
+    assert "from_address" not in segments
+
+
 def test_list_block_round_trips_without_collect_corrupting_ids():
     """A full collect->apply round-trip must translate ListBlock items.
 
