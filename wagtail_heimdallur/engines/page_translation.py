@@ -65,6 +65,7 @@ class PageTranslationEngine:
         self._untranslatable_block_classes: tuple | None = None
         self._untranslatable_fields: set | None = None
         self._child_relation_config: dict | None = None
+        self._warned_child_relations: set = set()
 
     def _field_names(self, page: object) -> list[str]:
         """Translatable page field names, minus any configured exclusions."""
@@ -94,15 +95,27 @@ class PageTranslationEngine:
         return self._child_relation_config
 
     @staticmethod
-    def _child_segment_ref(child, index) -> str:
-        """A key part identifying a child across source and target.
+    def _child_segment_ref(child) -> str | None:
+        """The child's translation_key, or None if it isn't a TranslatableMixin.
 
-        Prefer the child's ``translation_key`` — a TranslatableMixin child keeps
-        the same one across locales (copy_for_translation copies it), so source
-        and target match regardless of order. Otherwise fall back to position.
+        A TranslatableMixin child keeps the same translation_key across locales
+        (copy_for_translation copies it), so source and target match by it
+        regardless of order. Children without one can't be matched reliably and
+        are skipped — position matching would silently mis-apply translations
+        when fields are reordered/added/removed.
         """
         translation_key = getattr(child, "translation_key", None)
-        return str(translation_key) if translation_key else str(index)
+        return str(translation_key) if translation_key else None
+
+    def _warn_child_relation_not_translatable(self, relation: str) -> None:
+        if relation not in self._warned_child_relations:
+            self._warned_child_relations.add(relation)
+            logger.warning(
+                "Heimdallur: child relation %r is configured for translation but "
+                "its model is not a TranslatableMixin (no translation_key); "
+                "skipping. Add TranslatableMixin to the child model to translate it.",
+                relation,
+            )
 
     def _collect_child_segments(self, page: object, handle) -> None:
         """Record translatable text on configured child relations (form fields, …)."""
@@ -114,8 +127,11 @@ class PageTranslationEngine:
                 children = list(manager.all())
             except Exception:  # pragma: no cover - defensive
                 continue
-            for index, child in enumerate(children):
-                ref = self._child_segment_ref(child, index)
+            for child in children:
+                ref = self._child_segment_ref(child)
+                if ref is None:
+                    self._warn_child_relation_not_translatable(relation)
+                    break  # all children share a model, so skip the whole relation
                 for field in fields:
                     text = getattr(child, field, "") or ""
                     if isinstance(text, str) and text:
@@ -134,8 +150,10 @@ class PageTranslationEngine:
             if not children:
                 continue
             changed = False
-            for index, child in enumerate(children):
-                ref = self._child_segment_ref(child, index)
+            for child in children:
+                ref = self._child_segment_ref(child)
+                if ref is None:
+                    break
                 for field in fields:
                     key = f"{relation}:{ref}:{field}"
                     if key in resolved:

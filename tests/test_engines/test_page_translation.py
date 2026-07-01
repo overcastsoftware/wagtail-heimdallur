@@ -427,50 +427,40 @@ class _FakeFormPage:
         self.saved = True
 
 
-def test_collect_includes_child_relation_fields():
+def test_child_relation_skipped_when_not_translatable():
+    # Children without a translation_key can't be matched reliably, so the whole
+    # relation is skipped (only the page field is collected).
     page = _FakeFormPage(
+        fields=[_FakeChild(label="Nafn", help_text="", choices="")],
+        page_fields={"title": "Titill"},
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(page))
+
+    assert segments == {"title": "Titill"}
+
+
+def test_child_segments_collected_and_applied_by_translation_key():
+    source = _FakeFormPage(
         fields=[
-            _FakeChild(label="Nafn", help_text="", choices=""),
-            _FakeChild(label="Kennitala", help_text="Hjálpartexti", choices=""),
+            _FakeChild(label="Nafn", help_text="Hjálp", choices="", translation_key="tk-1"),
         ],
         page_fields={"title": "Titill"},
     )
-
-    segments = dict(PageTranslationEngine().collect_segments(page))
-
-    assert segments["title"] == "Titill"  # page field still collected
-    assert segments["form_fields:0:label"] == "Nafn"
-    assert segments["form_fields:1:label"] == "Kennitala"
-    assert segments["form_fields:1:help_text"] == "Hjálpartexti"
-
-
-def test_apply_writes_child_relation_fields():
-    source = _FakeFormPage(
-        fields=[_FakeChild(label="Nafn", help_text="", choices="")],
-        page_fields={"title": "Titill"},
-    )
     target = _FakeFormPage(
-        fields=[_FakeChild(label="Nafn", help_text="", choices="")],
+        fields=[_FakeChild(label="Nafn", help_text="Hjálp", choices="", translation_key="tk-1")],
         page_fields={"title": "Titill"},
     )
+
+    segments = dict(PageTranslationEngine().collect_segments(source))
+    assert segments["form_fields:tk-1:label"] == "Nafn"  # keyed by translation_key
+    assert segments["form_fields:tk-1:help_text"] == "Hjálp"
 
     PageTranslationEngine().apply_resolved_segments(
-        source, target, {"title": "Title", "form_fields:0:label": "Name"}
+        source, target, {"form_fields:tk-1:label": "Name"}
     )
-
-    assert target.title == "Title"  # page field applied
-    assert target.form_fields.all()[0].label == "Name"  # child field applied
+    assert target.form_fields.all()[0].label == "Name"
     assert target.form_fields.set_calls  # persisted via .set()
-
-
-def test_child_segments_keyed_by_translation_key_when_available():
-    page = _FakeFormPage(
-        fields=[_FakeChild(label="Nafn", help_text="", choices="", translation_key="tk-1")],
-    )
-
-    segments = dict(PageTranslationEngine().collect_segments(page))
-
-    assert segments["form_fields:tk-1:label"] == "Nafn"  # keyed by translation_key
 
 
 def test_apply_matches_translatable_children_regardless_of_order():

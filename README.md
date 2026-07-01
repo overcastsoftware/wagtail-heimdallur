@@ -329,16 +329,22 @@ WAGTAIL_HEIMDALLUR = {
 #### Form pages and other child-relation content
 
 Text that lives on a page's **child relations** (Wagtail `InlinePanel` content) is
-translated too — out of the box this covers the **form builder**: each form
-field's `label`, `help_text` and `choices`. Configure other relations (or add
-fields like `default_value`) via `translatable_child_relations`.
+translated too — for example each form field's `label`, `help_text` and
+`choices`. Configure which relations/fields via `translatable_child_relations`
+(defaults to the form builder's `form_fields`).
 
-Child objects are matched between source and target by their `translation_key`
-when the child model is a `TranslatableMixin` (robust to reordering), and **by
-position** otherwise. Either way, adding or removing children on the source after
-the translation exists won't create/remove them on the translated page — re-copy
-the page (Wagtail's "Translate page") for structural changes. Editing existing
-children's text translates normally.
+The child model **must be a `TranslatableMixin`**, so a child keeps the same
+`translation_key` across locales and each field is matched to its counterpart by
+that stable id (never by position — which would silently mis-apply a translation
+if fields were reordered). A configured relation whose model isn't translatable
+is skipped with a warning. Wagtail's form builder `FormField` is not translatable
+by default; add `TranslatableMixin` to it (plus a migration) to enable form field
+translation.
+
+Adding or removing children on the source after the translation exists won't
+create/remove them on the translated page — re-translate the page (Wagtail's
+"Translate page") for structural changes. Editing existing children's text
+translates normally.
 
 #### Non-text content (choosers, embeds, numbers …) and overrides
 
