@@ -313,9 +313,30 @@ WAGTAIL_HEIMDALLUR = {
         # per locale. Defaults to excluding RawHTMLBlock; set to [] to translate
         # everything.
         "untranslatable_blocks": ["wagtail.blocks.RawHTMLBlock"],
+        # Page fields to never translate (config, not content). Defaults to the
+        # form builder's email settings.
+        "untranslatable_fields": ["to_address", "from_address"],
+        # Translatable text on child relations (InlinePanel content), as
+        # {relation: [fields]}. Defaults to the form builder's fields so form
+        # labels/help/choices are translated.
+        "translatable_child_relations": {
+            "form_fields": ["label", "help_text", "choices"],
+        },
     },
 }
 ```
+
+#### Form pages and other child-relation content
+
+Text that lives on a page's **child relations** (Wagtail `InlinePanel` content) is
+translated too — out of the box this covers the **form builder**: each form
+field's `label`, `help_text` and `choices`. Configure other relations (or add
+fields like `default_value`) via `translatable_child_relations`.
+
+Child objects are matched between source and target **by position**, so adding or
+removing fields on the source after the translation exists won't propagate to the
+translated page automatically — re-copy the page (Wagtail's "Translate page") or
+adjust the fields there. Editing existing fields' text translates normally.
 
 #### Non-text content (choosers, embeds, numbers …) and overrides
 

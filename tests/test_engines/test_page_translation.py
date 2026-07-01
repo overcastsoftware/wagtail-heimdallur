@@ -393,6 +393,92 @@ def test_raw_html_translated_when_not_excluded():
     assert segments["stream:b"] == "<script>x()</script>"  # now translated
 
 
+class _FakeChild:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _FakeRelManager:
+    def __init__(self, items):
+        self._items = list(items)
+        self.set_calls = []
+
+    def all(self):
+        return list(self._items)
+
+    def set(self, items, bulk=True):
+        self._items = list(items)
+        self.set_calls.append(bulk)
+
+
+class _FakeFormPage:
+    def __init__(self, fields=None, page_fields=None):
+        self.form_fields = _FakeRelManager(fields or [])
+        self._page_fields = page_fields or {}
+        for key, value in self._page_fields.items():
+            setattr(self, key, value)
+        self.saved = False
+
+    def get_translatable_field_names(self):
+        return list(self._page_fields)
+
+    def save_revision(self):
+        self.saved = True
+
+
+def test_collect_includes_child_relation_fields():
+    page = _FakeFormPage(
+        fields=[
+            _FakeChild(label="Nafn", help_text="", choices=""),
+            _FakeChild(label="Kennitala", help_text="Hjálpartexti", choices=""),
+        ],
+        page_fields={"title": "Titill"},
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(page))
+
+    assert segments["title"] == "Titill"  # page field still collected
+    assert segments["form_fields:0:label"] == "Nafn"
+    assert segments["form_fields:1:label"] == "Kennitala"
+    assert segments["form_fields:1:help_text"] == "Hjálpartexti"
+
+
+def test_apply_writes_child_relation_fields():
+    source = _FakeFormPage(
+        fields=[_FakeChild(label="Nafn", help_text="", choices="")],
+        page_fields={"title": "Titill"},
+    )
+    target = _FakeFormPage(
+        fields=[_FakeChild(label="Nafn", help_text="", choices="")],
+        page_fields={"title": "Titill"},
+    )
+
+    PageTranslationEngine().apply_resolved_segments(
+        source, target, {"title": "Title", "form_fields:0:label": "Name"}
+    )
+
+    assert target.title == "Title"  # page field applied
+    assert target.form_fields.all()[0].label == "Name"  # child field applied
+    assert target.form_fields.set_calls  # persisted via .set()
+
+
+def test_untranslatable_page_fields_are_excluded():
+    page = _FakeFormPage(
+        page_fields={
+            "title": "Titill",
+            "to_address": "forms@example.is",
+            "from_address": "no-reply@example.is",
+        }
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(page))
+
+    assert "title" in segments
+    assert "to_address" not in segments  # email config not translated
+    assert "from_address" not in segments
+
+
 def test_list_block_round_trips_without_collect_corrupting_ids():
     """A full collect->apply round-trip must translate ListBlock items.
 

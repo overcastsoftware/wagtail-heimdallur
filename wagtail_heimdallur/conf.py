@@ -23,6 +23,17 @@ DEFAULTS = {
         # be overridden per locale). RawHTMLBlock is excluded by default so raw
         # markup/scripts aren't mangled; set to [] to translate everything.
         "untranslatable_blocks": ["wagtail.blocks.RawHTMLBlock"],
+        # Page fields to never translate (config, not content). The form builder's
+        # email settings are excluded by default so email addresses aren't sent
+        # through the translator.
+        "untranslatable_fields": ["to_address", "from_address"],
+        # Translatable text on child relations (InlinePanel content), as
+        # {relation_name: [field names]}. Defaults to the form builder's fields so
+        # form labels/help/choices get translated. Children are matched between
+        # source and target by position.
+        "translatable_child_relations": {
+            "form_fields": ["label", "help_text", "choices"],
+        },
     },
 }
 

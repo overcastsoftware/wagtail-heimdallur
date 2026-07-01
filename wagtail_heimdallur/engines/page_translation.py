@@ -63,6 +63,77 @@ class PageTranslationEngine:
     def __init__(self, translation_engine: TranslationEngine | None = None):
         self.translation_engine = translation_engine or TranslationEngine()
         self._untranslatable_block_classes: tuple | None = None
+        self._untranslatable_fields: set | None = None
+        self._child_relation_config: dict | None = None
+
+    def _field_names(self, page: object) -> list[str]:
+        """Translatable page field names, minus any configured exclusions."""
+        excluded = self._untranslatable_field_names()
+        return [n for n in _translatable_field_names(page) if n not in excluded]
+
+    def _untranslatable_field_names(self) -> set:
+        if self._untranslatable_fields is None:
+            from wagtail_heimdallur.conf import get_settings
+
+            self._untranslatable_fields = set(
+                get_settings()
+                .get("PAGE_TRANSLATION", {})
+                .get("untranslatable_fields", [])
+            )
+        return self._untranslatable_fields
+
+    def _child_relations(self) -> dict:
+        if self._child_relation_config is None:
+            from wagtail_heimdallur.conf import get_settings
+
+            self._child_relation_config = dict(
+                get_settings()
+                .get("PAGE_TRANSLATION", {})
+                .get("translatable_child_relations", {})
+            )
+        return self._child_relation_config
+
+    def _collect_child_segments(self, page: object, handle) -> None:
+        """Record translatable text on configured child relations (form fields, …)."""
+        for relation, fields in self._child_relations().items():
+            manager = getattr(page, relation, None)
+            if manager is None:
+                continue
+            try:
+                children = list(manager.all())
+            except Exception:  # pragma: no cover - defensive
+                continue
+            for index, child in enumerate(children):
+                for field in fields:
+                    text = getattr(child, field, "") or ""
+                    if isinstance(text, str) and text:
+                        handle(f"{relation}:{index}:{field}", text)
+
+    def _apply_child_segments(self, target_page, resolved, result) -> None:
+        """Write translated text back onto the target's child objects (by position)."""
+        for relation, fields in self._child_relations().items():
+            manager = getattr(target_page, relation, None)
+            if manager is None:
+                continue
+            try:
+                children = list(manager.all())
+            except Exception:  # pragma: no cover - defensive
+                continue
+            if not children:
+                continue
+            changed = False
+            for index, child in enumerate(children):
+                for field in fields:
+                    key = f"{relation}:{index}:{field}"
+                    if key in resolved:
+                        setattr(child, field, resolved[key])
+                        changed = True
+            if changed:
+                # In-place edits to `.all()` children are not serialized on save;
+                # re-setting the relation is what persists them.
+                manager.set(children, bulk=False)
+                if relation not in result.translated_fields:
+                    result.translated_fields.append(relation)
 
     def _excluded_block_classes(self) -> tuple:
         """Block classes configured (or defaulted) to skip translation."""
@@ -571,10 +642,11 @@ class PageTranslationEngine:
             segments.append((key, text))
             return text
 
-        for field_name in _translatable_field_names(page):
+        for field_name in self._field_names(page):
             self._walk_value(
                 getattr(page, field_name, None), handle, field_name, mutate=False
             )
+        self._collect_child_segments(page, handle)
         return segments
 
     # ------------------------------------------------------------------
@@ -605,7 +677,7 @@ class PageTranslationEngine:
             values[key] = value
             return value
 
-        for field_name in _translatable_field_names(page):
+        for field_name in self._field_names(page):
             self._walk_value(
                 getattr(page, field_name, None),
                 lambda key, text: text,
@@ -625,7 +697,7 @@ class PageTranslationEngine:
                 hashes[key] = value_hash
             return value
 
-        for field_name in _translatable_field_names(page):
+        for field_name in self._field_names(page):
             self._walk_value(
                 getattr(page, field_name, None),
                 lambda key, text: text,
@@ -686,7 +758,7 @@ class PageTranslationEngine:
 
         setattr(target_page, "_heimdallur_translation_in_progress", True)
         try:
-            for field_name in _translatable_field_names(source_page):
+            for field_name in self._field_names(source_page):
                 counted = [0]
 
                 def handle(key, text, counted=counted):
@@ -716,6 +788,7 @@ class PageTranslationEngine:
                 if counted[0]:
                     result.translated_fields.append(field_name)
 
+            self._apply_child_segments(target_page, resolved, result)
             _save_draft(target_page)
         finally:
             setattr(target_page, "_heimdallur_translation_in_progress", False)
