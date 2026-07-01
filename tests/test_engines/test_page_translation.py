@@ -463,6 +463,37 @@ def test_apply_writes_child_relation_fields():
     assert target.form_fields.set_calls  # persisted via .set()
 
 
+def test_child_segments_keyed_by_translation_key_when_available():
+    page = _FakeFormPage(
+        fields=[_FakeChild(label="Nafn", help_text="", choices="", translation_key="tk-1")],
+    )
+
+    segments = dict(PageTranslationEngine().collect_segments(page))
+
+    assert segments["form_fields:tk-1:label"] == "Nafn"  # keyed by translation_key
+
+
+def test_apply_matches_translatable_children_regardless_of_order():
+    # Target children are in a different order than the source; matching by
+    # translation_key must still put each translation on the right child.
+    target = _FakeFormPage(
+        fields=[
+            _FakeChild(label="B", help_text="", choices="", translation_key="tk-b"),
+            _FakeChild(label="A", help_text="", choices="", translation_key="tk-a"),
+        ]
+    )
+
+    PageTranslationEngine().apply_resolved_segments(
+        _FakeFormPage(),
+        target,
+        {"form_fields:tk-a:label": "A-EN", "form_fields:tk-b:label": "B-EN"},
+    )
+
+    labels = {c.translation_key: c.label for c in target.form_fields.all()}
+    assert labels["tk-a"] == "A-EN"
+    assert labels["tk-b"] == "B-EN"
+
+
 def test_untranslatable_page_fields_are_excluded():
     page = _FakeFormPage(
         page_fields={

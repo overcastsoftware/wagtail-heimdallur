@@ -333,10 +333,12 @@ translated too — out of the box this covers the **form builder**: each form
 field's `label`, `help_text` and `choices`. Configure other relations (or add
 fields like `default_value`) via `translatable_child_relations`.
 
-Child objects are matched between source and target **by position**, so adding or
-removing fields on the source after the translation exists won't propagate to the
-translated page automatically — re-copy the page (Wagtail's "Translate page") or
-adjust the fields there. Editing existing fields' text translates normally.
+Child objects are matched between source and target by their `translation_key`
+when the child model is a `TranslatableMixin` (robust to reordering), and **by
+position** otherwise. Either way, adding or removing children on the source after
+the translation exists won't create/remove them on the translated page — re-copy
+the page (Wagtail's "Translate page") for structural changes. Editing existing
+children's text translates normally.
 
 #### Non-text content (choosers, embeds, numbers …) and overrides
 

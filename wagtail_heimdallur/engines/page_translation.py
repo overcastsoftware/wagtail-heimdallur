@@ -93,6 +93,17 @@ class PageTranslationEngine:
             )
         return self._child_relation_config
 
+    @staticmethod
+    def _child_segment_ref(child, index) -> str:
+        """A key part identifying a child across source and target.
+
+        Prefer the child's ``translation_key`` — a TranslatableMixin child keeps
+        the same one across locales (copy_for_translation copies it), so source
+        and target match regardless of order. Otherwise fall back to position.
+        """
+        translation_key = getattr(child, "translation_key", None)
+        return str(translation_key) if translation_key else str(index)
+
     def _collect_child_segments(self, page: object, handle) -> None:
         """Record translatable text on configured child relations (form fields, …)."""
         for relation, fields in self._child_relations().items():
@@ -104,10 +115,11 @@ class PageTranslationEngine:
             except Exception:  # pragma: no cover - defensive
                 continue
             for index, child in enumerate(children):
+                ref = self._child_segment_ref(child, index)
                 for field in fields:
                     text = getattr(child, field, "") or ""
                     if isinstance(text, str) and text:
-                        handle(f"{relation}:{index}:{field}", text)
+                        handle(f"{relation}:{ref}:{field}", text)
 
     def _apply_child_segments(self, target_page, resolved, result) -> None:
         """Write translated text back onto the target's child objects (by position)."""
@@ -123,8 +135,9 @@ class PageTranslationEngine:
                 continue
             changed = False
             for index, child in enumerate(children):
+                ref = self._child_segment_ref(child, index)
                 for field in fields:
-                    key = f"{relation}:{index}:{field}"
+                    key = f"{relation}:{ref}:{field}"
                     if key in resolved:
                         setattr(child, field, resolved[key])
                         changed = True
