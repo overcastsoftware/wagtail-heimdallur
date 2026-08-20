@@ -8,6 +8,8 @@ import json
 import logging
 from typing import Any
 
+from django.core.exceptions import ValidationError
+
 from wagtail_heimdallur.engines.translation import TranslationEngine
 from wagtail_heimdallur.exceptions import BackendError
 from wagtail_heimdallur.models import TranslationJob
@@ -786,10 +788,12 @@ class PageTranslationEngine:
         result = PageTranslationResult(replaced_edits=list(replaced_edits or []))
         nontext_memory = nontext_memory or {}
         target_nontext = self.collect_nontext_values(target_page)
+        previous_values = {}
 
         setattr(target_page, "_heimdallur_translation_in_progress", True)
         try:
             for field_name in self._field_names(source_page):
+                previous_values[field_name] = getattr(target_page, field_name, None)
                 counted = [0]
 
                 def handle(key, text, counted=counted):
@@ -820,12 +824,63 @@ class PageTranslationEngine:
                     result.translated_fields.append(field_name)
 
             self._apply_child_segments(target_page, resolved, result)
+            self._revert_invalid_fields(target_page, previous_values, result)
             _save_draft(target_page)
         finally:
             setattr(target_page, "_heimdallur_translation_in_progress", False)
 
         setattr(target_page, "_heimdallur_skipped_translation_fields", [])
         return result
+
+    def _revert_invalid_fields(self, target_page, previous_values, result) -> None:
+        """Restore fields whose translated value fails model validation.
+
+        A translation can be longer than the source and overflow a CharField's
+        ``max_length``, which would make ``save_revision`` reject the whole
+        draft and lose every other field's translation. Instead, put the
+        previous target value back on just the failing fields (the revert is
+        per field, so a StreamField loses all of its segments if any one of
+        them is invalid) and report them as skipped, so the rest of the page
+        still saves and the job completes with warnings.
+        """
+        full_clean = getattr(target_page, "full_clean", None)
+        if full_clean is None:
+            return
+
+        reverted = set()
+        while True:
+            try:
+                full_clean()
+            except ValidationError as exc:
+                error_dict = getattr(exc, "error_dict", None) or {}
+                revertable = [
+                    name
+                    for name in error_dict
+                    if name in previous_values and name not in reverted
+                ]
+                if not revertable:
+                    # Errors we did not cause (or a revert that did not help):
+                    # nothing more we can do — fail the job as before.
+                    raise
+                for name in revertable:
+                    setattr(target_page, name, previous_values[name])
+                    reverted.add(name)
+                    if name in result.translated_fields:
+                        result.translated_fields.remove(name)
+                    messages = [
+                        message
+                        for error in error_dict[name]
+                        for message in error.messages
+                    ]
+                    result.skipped_fields.append(
+                        SkippedField(
+                            name,
+                            "Translation failed validation; the previous value "
+                            "was kept: " + "; ".join(messages),
+                        )
+                    )
+            else:
+                return
 
     def _walk_value(
         self, value: Any, handle, path: str, handle_value=None, mutate: bool = True

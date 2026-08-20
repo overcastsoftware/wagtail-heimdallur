@@ -566,3 +566,94 @@ def test_page_translation_applies_translated_texts_in_field_order():
     assert target.stream == [{"type": "paragraph", "value": "Stream"}]
     assert result.translated_fields == ["title", "body", "stream"]
     assert target.saved_revision is True
+
+
+class _ValidatingPage:
+    """Page-like object whose full_clean enforces a max length on title."""
+
+    MAX_TITLE_LENGTH = 30
+
+    def __init__(self, title, caption, body, language_code):
+        self.title = title
+        self.caption = caption
+        self.body = RichText(body)
+        self.locale = Locale(language_code)
+        self.saved_revision = False
+
+    def get_translatable_field_names(self):
+        return ["title", "caption", "body"]
+
+    def full_clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if len(self.title) > self.MAX_TITLE_LENGTH:
+            errors["title"] = ["Gildið má mest vera 30 stafir að lengd."]
+        if len(self.caption) > self.MAX_TITLE_LENGTH:
+            errors["caption"] = ["Gildið má mest vera 30 stafir að lengd."]
+        if errors:
+            raise ValidationError(errors)
+
+    def save_revision(self):
+        self.full_clean()
+        self.saved_revision = True
+
+
+def test_apply_reverts_field_whose_translation_fails_validation():
+    """A translation overflowing a field's max_length is dropped (previous value
+    kept) and reported, while every other field still gets its translation."""
+    target = _ValidatingPage("Stutt", "Stuttur texti", "Texti", "en")
+    result = PageTranslationEngine().apply_resolved_segments(
+        _ValidatingPage("Stutt", "Stuttur texti", "Texti", "is"),
+        target,
+        {
+            "title": "Short EN",
+            "caption": "A translated caption that is far longer than the field allows",
+            "body": "Body EN",
+        },
+    )
+
+    assert target.caption == "Stuttur texti"  # reverted to the previous value
+    assert target.title == "Short EN"
+    assert target.body == RichText("Body EN")
+    assert target.saved_revision is True
+    assert result.completed_with_warnings
+    assert [skipped.field_name for skipped in result.skipped_fields] == ["caption"]
+    assert "mest vera 30 stafir" in result.skipped_fields[0].error
+    assert "caption" not in result.translated_fields
+    assert result.translated_fields == ["title", "body"]
+
+
+def test_apply_reverts_multiple_invalid_fields_at_once():
+    target = _ValidatingPage("Stutt", "Stuttur texti", "Texti", "en")
+    too_long = "x" * 40
+    result = PageTranslationEngine().apply_resolved_segments(
+        _ValidatingPage("Stutt", "Stuttur texti", "Texti", "is"),
+        target,
+        {"title": too_long, "caption": too_long, "body": "Body EN"},
+    )
+
+    assert target.title == "Stutt"
+    assert target.caption == "Stuttur texti"
+    assert target.saved_revision is True
+    assert {skipped.field_name for skipped in result.skipped_fields} == {
+        "title",
+        "caption",
+    }
+
+
+def test_apply_reraises_validation_error_a_revert_cannot_fix():
+    """If the previous value is itself invalid (or the error is not on a field
+    we set), reverting cannot help — the error propagates and fails the job."""
+    import pytest
+    from django.core.exceptions import ValidationError
+
+    too_long = "x" * 40
+    target = _ValidatingPage("Stutt", too_long, "Texti", "en")
+    with pytest.raises(ValidationError):
+        PageTranslationEngine().apply_resolved_segments(
+            _ValidatingPage("Stutt", "Stuttur texti", "Texti", "is"),
+            target,
+            {"caption": "y" * 40},
+        )
+    assert target.saved_revision is False
