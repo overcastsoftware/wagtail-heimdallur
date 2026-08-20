@@ -343,14 +343,31 @@ def test_400_raises_backend_request_error(httpx_mock):
         mideind_backend().proofread("text", "is")
 
 
-def test_500_raises_backend_error(httpx_mock):
+def test_500_raises_backend_error_with_status_url_and_body(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE_URL}/v1/grammar",
+        status_code=503,
+        text="upstream translation engine unavailable",
+    )
+
+    with pytest.raises(BackendError) as excinfo:
+        mideind_backend().proofread("text", "is")
+
+    message = str(excinfo.value)
+    assert "HTTP 503" in message
+    assert "/v1/grammar" in message
+    assert "upstream translation engine unavailable" in message
+
+
+def test_500_with_empty_body_still_reports_status(httpx_mock):
     httpx_mock.add_response(
         method="POST",
         url=f"{BASE_URL}/v1/grammar",
         status_code=500,
     )
 
-    with pytest.raises(BackendError):
+    with pytest.raises(BackendError, match="HTTP 500"):
         mideind_backend().proofread("text", "is")
 
 

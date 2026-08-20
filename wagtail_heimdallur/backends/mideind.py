@@ -236,7 +236,11 @@ class MideindBackend(BaseProofreadingBackend, BaseTranslationBackend):
         if status_code == 400:
             raise BackendRequestError(f"Miðeind rejected the request: {body}")
         if status_code >= 500:
-            raise BackendError("Miðeind API returned a server-side error.")
+            detail = body.strip()[:500] or "(empty response body)"
+            raise BackendError(
+                f"Miðeind API returned a server-side error (HTTP {status_code} "
+                f"from {response.request.method} {response.request.url}): {detail}"
+            )
 
         raise BackendError(
             f"Miðeind API returned unexpected HTTP status {status_code}: {body}"
